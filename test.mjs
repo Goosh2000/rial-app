@@ -87,8 +87,10 @@ vm.createContext(ctx);
 // strip the auto-boot call (now `boot().catch(...)`); expose internals for assertions
 src = src.replace(/\nboot\(\)[\s\S]*$/, "\n");
 src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, keypadHTML, settingsHTML, sparkSVG,
-  parseCSV, guessDate, csvParseRow, autoMap, isDuplicate, parseSMSBlock, splitBlocks, buildICS, icsSignature,
-  advanceDue, rollRecurring, DEFAULT_SMS_PATTERNS, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals,
+  parseCSV, guessDate, csvParseRow, autoMap, isDuplicate, buildICS, icsSignature,
+  advanceDue, rollRecurring, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals,
+  SmsParser, parserCtx, toReviewEntry, markDuplicates, catNameFor,
+  primaryAccount, accountById, accountByLast4, accountLast4Set, acctLabel, allowanceInfoHTML, accountsHTML,
   parseHM, fmtHM, windowActive, scheduledThemeAt, nextBoundaryAfter, manualExpired, currentThemeId,
   evaluateSchedule, applyTheme, THEMES, THEME_DEFAULT, THEME_TOKEN_KEYS, themeName, themeBg, validTheme, scheduleHTML,
   QR, validateSharedTheme, encodeThemeLink, decodeThemeLink, serializeThemeForShare, buildShareLink,
@@ -149,7 +151,11 @@ S.recurring = [
 ];
 S.wishlist = [];
 S.goals = [];
-S.settings = { monthlyIncome: 900000, savingsTargetPct: 10, salaryDay: 25, streak: 3, soundOn: false, theme: "midnight", lastBackup: null };
+S.accounts = [
+  { id: "a-main", label: "Main", last4: "0017", type: "current", isPrimary: true, openingBalance: 0 },
+  { id: "a-sav", label: "Savings", last4: "0033", type: "savings", isPrimary: false, openingBalance: 100000 },
+];
+S.settings = { monthlyIncome: 900000, savingsTargetPct: 10, salaryDay: 25, streak: 3, soundOn: false, theme: "midnight", lastBackup: null, allowanceFloor: 0, merchantRules: [], smsParserPatterns: null };
 S.tx = [
   { id: "t1", ts: U.todayTs(), month: MK, amount: 900000, type: "income", category: "Salary" },
   { id: "t2", ts: U.todayTs(), month: MK, amount: 12300, type: "expense", category: "Food" },
@@ -305,20 +311,17 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   ok("isDuplicate rejects different amount", T.isDuplicate({ ...r1, amount: 9999 }) === false);
 }
 
-/* ---- 7e. SMS parser ---- */
+/* ---- 7e. SMS parser (also covered exhaustively in test-parser.mjs) ---- */
 {
-  const pats = T.DEFAULT_SMS_PATTERNS;
-  const a = T.parseSMSBlock("Purchase of OMR 4.500 at LULU HYPERMARKET on 26-08-2026. Avl bal OMR 210.000", pats);
-  ok("SMS debit parsed", !!a && a.type === "expense");
-  eq("SMS debit amount", a.amount, 4500);
-  ok("SMS merchant extracted", /LULU/i.test(a.note));
-  const b = T.parseSMSBlock("Your account has been credited with OMR 900.000 - salary on 25-08-2026", pats);
-  ok("SMS credit parsed as income", !!b && b.type === "income");
-  eq("SMS credit amount", b.amount, 900000);
-  const c = T.parseSMSBlock("random text no money here", pats);
-  ok("SMS: unparseable returns null", c === null);
-  const blocks = T.splitBlocks("SMS one OMR 1.000\n\nSMS two OMR 2.000");
-  eq("splitBlocks splits on blank line", blocks.length, 2);
+  const ctx = { accountLast4: ["0017", "0033"], now: new Date(2026, 7, 28, 12).getTime() };
+  const a = T.SmsParser.parseOne("Card of a/c 0303XXXXXXXX0017 used for OMR 10.120 at DOMINOS MANAILAH AL KH on 26/08/2026", ctx);
+  ok("SMS card purchase -> expense", a.type === "expense" && a.amount === 10120 && a.fromLast4 === "0017");
+  const b = T.SmsParser.parseOne("OMR 420.000 is debited from your A/C 0303XXXXXXXX0017 and credited to your A/C 0303XXXXXXXX0033 on 26/08/2026 19:44:31.", ctx);
+  eq("SMS both-mine transfer -> transfer_internal", b.type, "transfer_internal");
+  const c = T.SmsParser.parseOne("random text no money here", ctx);
+  ok("SMS unknown -> review entry, not null", c && c.type === "review");
+  const batch = T.SmsParser.parseBatch("Salary OMR 644.000 Credited to your Account 26/08/2026.\n\nDear Customer, You have received OMR 2.030 from AHMED ALI", ctx);
+  eq("SMS batch splits on blank line", batch.length, 2);
 }
 
 /* ---- 7f. ICS export ---- */
@@ -504,6 +507,108 @@ try {
   const link = await T.buildShareLink("midnight");
   ok("buildShareLink returns a #theme= fragment url", /\/rial-app\/#theme=[dr][A-Za-z0-9_-]+$/.test(link.url));
   ok("buildShareLink round-trips", (await T.decodeThemeLink(link.encoded)).id === "midnight");
+}
+
+/* ---- 7p. accounts + transaction types + daily allowance ---- */
+{
+  const A_MAIN = "am", A_SAV = "as";
+  S.accounts = [
+    { id: A_MAIN, label: "Main", last4: "0017", type: "current", isPrimary: true, openingBalance: 0 },
+    { id: A_SAV, label: "Savings", last4: "0033", type: "savings", isPrimary: false, openingBalance: 0 },
+  ];
+  const MKA = U.monthKey();
+  S.recurring = []; S.envelopes = []; S.plans = []; S.goals = [];
+  S.settings = { ...S.settings, monthlyIncome: 600000, allowanceFloor: 0, savingsTargetPct: 0 };
+  S.tx = [
+    { id: "x1", ts: U.todayTs(), month: MKA, amount: 500000, type: "income", category: "Salary", accountId: A_MAIN },
+    { id: "x2", ts: U.todayTs(), month: MKA, amount: 40000, type: "expense", category: "Food", accountId: A_MAIN },
+    { id: "x3", ts: U.todayTs(), month: MKA, amount: 30000, type: "transfer_out", counterparty: "Ali", accountId: A_MAIN },
+    { id: "x4", ts: U.todayTs(), month: MKA, amount: 10000, type: "transfer_in", counterparty: "Sara", accountId: A_MAIN },
+    { id: "x5", ts: U.todayTs(), month: MKA, amount: 200000, type: "transfer_internal", fromAccountId: A_MAIN, toAccountId: A_SAV },
+  ];
+
+  // type predicates
+  ok("isSpend: expense + transfer_out yes; internal + transfer_in no",
+     F.isSpend({ type: "expense" }) && F.isSpend({ type: "transfer_out" }) && !F.isSpend({ type: "transfer_internal" }) && !F.isSpend({ type: "transfer_in" }));
+  ok("isIncome: income + transfer_in yes; internal no",
+     F.isIncome({ type: "income" }) && F.isIncome({ type: "transfer_in" }) && !F.isIncome({ type: "transfer_internal" }));
+
+  // THE explicit test: the 200.000 internal transfer moves both balances, changes spending by ZERO
+  eq("spentThisMonth counts only real outflows (40 + 30)", F.spentThisMonth(MKA), 70000);
+  eq("incomeThisMonth counts income + transfer_in (500 + 10)", F.incomeThisMonth(MKA), 510000);
+  eq("Main balance: +500 -40 -30 +10 -200 = 240.000", F.accountBalance(A_MAIN), 240000);
+  eq("Savings balance: +200.000", F.accountBalance(A_SAV), 200000);
+  eq("combined balance unaffected by the internal transfer", F.combinedBalance(), 440000);
+  // remove the internal transfer -> spending unchanged, balances shift back
+  const noInternal = S.tx.filter(t => t.id !== "x5");
+  const withAll = F.spentThisMonth(MKA);
+  S.tx = noInternal;
+  eq("removing the internal transfer changes spentThisMonth by ZERO", F.spentThisMonth(MKA), withAll);
+  eq("without internal transfer, Main balance = 440.000", F.accountBalance(A_MAIN), 440000);
+  S.tx.push({ id: "x5", ts: U.todayTs(), month: MKA, amount: 200000, type: "transfer_internal", fromAccountId: A_MAIN, toAccountId: A_SAV });
+  // internal transfer never in envelope drawdown / category insights
+  S.envelopes = [{ id: "e1", month: MKA, category: "Food", allocated: 100000, sort: 0 }];
+  eq("envelopeSpent(Food) sees only the 40.000 real expense", F.envelopeSpent("Food", MKA), 40000);
+  S.envelopes = [];
+
+  // --- daily allowance: rolling correction ---
+  // income 600, no commitments/goals/envelopes -> pool 600 / daysInMonth
+  const at = (y, m, d) => new Date(y, m - 1, d, 12, 0, 0);
+  {
+    S.tx = [];
+    S.settings.monthlyIncome = 600000;
+    const jan = at(2026, 1, 1);
+    const al = F.dailyAllowance(jan);
+    eq("day 1 of a 31-day month: base = 600/31 rounded", al.base, Math.round(600000 / 31));
+    eq("nothing spent -> carryover 0", al.carryover, 0);
+    ok("allowance is never negative", al.today >= 0);
+  }
+  {
+    // simulate: it's the 10th, and I've overspent by a lot in the first 9 days
+    S.settings.monthlyIncome = 600000;   // base ~ 19354/day
+    const base = Math.round(600000 / 31);
+    S.tx = [{ id: "o1", ts: at(2026, 1, 5).getTime(), month: "2026-01", amount: base * 9 + 120000, type: "expense", category: "Food", accountId: "am" }];
+    const al = F.dailyAllowance(at(2026, 1, 10));
+    ok("large overspend: carryover is positive (behind)", al.carryover > 0);
+    ok("large overspend: correction reduces today's allowance", al.correction > 0 && al.today < al.base);
+    ok("large overspend: today's allowance is NEVER negative or zero as advice", al.today >= al.floor && al.today >= 0);
+    ok("large overspend: spread over min(7, days left)", al.spreadDays === Math.min(7, al.daysLeft));
+    ok("large overspend: message explains the correction", typeof al.message === "string" && /allowance is/.test(al.message));
+  }
+  {
+    // impossible case: overspend so large the remaining days can't absorb it above the floor
+    S.settings.monthlyIncome = 600000;
+    S.settings.allowanceFloor = 15000;
+    S.tx = [{ id: "o2", ts: at(2026, 1, 28).getTime(), month: "2026-01", amount: 2000000, type: "expense", category: "Food", accountId: "am" }];
+    const al = F.dailyAllowance(at(2026, 1, 29));   // 3 days left, huge overage
+    ok("impossible case flagged", al.impossible === true);
+    ok("impossible case: honest message, not a fake allowance", /can't absorb it|something has to give/i.test(al.message));
+    ok("impossible case: offers options", Array.isArray(al.options) && al.options.length >= 2);
+    ok("impossible case: displayed allowance never below the floor", al.today >= al.floor);
+    S.settings.allowanceFloor = 0;
+  }
+  {
+    // underspending rolls forward -> allowance rises
+    S.settings.monthlyIncome = 600000;
+    const base = Math.round(600000 / 31);
+    S.tx = [{ id: "u1", ts: at(2026, 1, 3).getTime(), month: "2026-01", amount: 5000, type: "expense", category: "Food", accountId: "am" }];
+    const al = F.dailyAllowance(at(2026, 1, 10));   // spent almost nothing in 9 days
+    ok("underspend: carryover is negative (ahead)", al.carryover < 0);
+    ok("underspend: today's allowance rises above base", al.today > al.base);
+    ok("underspend: message is encouraging, not scolding", /under/i.test(al.message) && !/over/i.test(al.message));
+  }
+  {
+    // transfer_internal is excluded from 'spent today'
+    S.settings.monthlyIncome = 600000;
+    const t = new Date();
+    S.tx = [
+      { id: "s1", ts: Date.now(), month: U.monthKey(), amount: 8000, type: "expense", category: "Food", accountId: "am" },
+      { id: "s2", ts: Date.now(), month: U.monthKey(), amount: 300000, type: "transfer_internal", fromAccountId: "am", toAccountId: "as" },
+    ];
+    const al = F.dailyAllowance(t);
+    eq("dailyAllowance spentToday excludes the internal transfer", al.spentToday, 8000);
+  }
+  S.tx = []; S.settings.allowanceFloor = 0;
 }
 
 /* ---- 7g0h. user-theme registry (rebuildThemeReg) ---- */

@@ -20,6 +20,10 @@ function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 & node build-themes.js --check
 if ($LASTEXITCODE -ne 0) { Fail "index.html is stale. Run: node build-themes.js  (then commit)" }
 
+# parser.js must be compiled into index.html before deploying
+& node build-parser.js --check
+if ($LASTEXITCODE -ne 0) { Fail "index.html is stale. Run: node build-parser.js  (then commit)" }
+
 # locate gh even if it isn't on PATH yet (fresh install)
 $gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
 if (-not $gh) {

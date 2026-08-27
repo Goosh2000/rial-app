@@ -11,6 +11,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
 const ok = (n, c, extra = "") => { c ? (pass++, console.log("  ok  " + n)) : (fail++, console.log("  FAIL " + n + (extra ? " -> " + extra : ""))); };
+const eq = (n, a, b) => ok(n, a === b, `got ${JSON.stringify(a)} want ${JSON.stringify(b)}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (fn, label, tries = 60) => {
   for (let i = 0; i < tries; i++) { try { if (fn()) return true; } catch {} await sleep(25); }
@@ -53,15 +54,25 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   ok("no jsdom errors during boot", errors.length === 0, errors.join(" | "));
   ok("onboarding shows on first run", $("#onb") && !$("#onb").hidden);
 
-  // Step 1 -> 2
-  click([...$$("#onb button")].find((b) => /Next/i.test(b.textContent)));
+  const onbNext = () => click([...$$("#onb button")].find((b) => /Next/i.test(b.textContent)));
+  // welcome -> income
+  onbNext();
   await until(() => $("#onbIncome"), "income step");
   setVal($("#onbIncome"), "900");
   setVal($("#onbSalaryDay"), "25");
-  click([...$$("#onb button")].find((b) => /Next/i.test(b.textContent)));
+  onbNext();
+  // accounts step
+  await until(() => $("[data-onb-acc]"), "accounts step");
+  setVal([...$$("[data-onb-acc][data-f='label']")][0], "Main");
+  setVal([...$$("[data-onb-acc][data-f='last4']")][0], "0017");
+  click($("#onbAccAdd"));
+  await until(() => $$("[data-onb-acc][data-f='last4']").length === 2, "second account row");
+  setVal([...$$("[data-onb-acc][data-f='label']")][1], "Savings");
+  setVal([...$$("[data-onb-acc][data-f='last4']")][1], "0033");
+  onbNext();
   await until(() => $("#onbSavePct"), "savings step");
   setVal($("#onbSavePct"), "15");
-  click([...$$("#onb button")].find((b) => /Next/i.test(b.textContent)));
+  onbNext();
   await until(() => [...$$("#onb button")].some((b) => /Finish/i.test(b.textContent)), "envelopes step");
   click([...$$("#onb button")].find((b) => /Finish/i.test(b.textContent)));
 
@@ -182,18 +193,106 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     ok("goal.saved increased by the transfer", g.saved === 25000);
   }
 
-  // --- SMS paste parser ---
+  // --- SMS paste parser: the 5 real fixtures through the review flow ---
+  const FIXTURES = [
+    "Salary OMR 644.000 Credited to your Account 26/08/2026.",
+    "Dear Customer, You have sent OMR 57.000 to AHME#####MOOD from your a/c 0303XXXXXXXX0017 on 26/08/2026 19:42:00 using Mobile",
+    "Dear Customer, You have received OMR 2.030 from AHMED ALI",
+    "OMR 420.000 is debited from your A/C 0303XXXXXXXX0017 and credited to your A/C 0303XXXXXXXX0033 on 26/08/2026 19:44:31.",
+    "Card of a/c 0303XXXXXXXX0017 used for OMR 10.120 at DOMINOS MANAILAH AL KH on 26/08/2026",
+  ].join("\n\n");
+  const allTx = () => JSON.parse(win.localStorage.getItem("rial:transactions") || "[]");
+  const metric = (expr) => win.eval(expr);
   win.eval('openOverlay("sms")');
   await until(() => $("#smsText"), "sms overlay");
-  setVal($("#smsText"), "Purchase of OMR 3.750 at CARREFOUR on 20-08-2026");
+  const mainId = win.eval("S.accounts.find(a=>a.last4==='0017').id");
+  const savId = win.eval("S.accounts.find(a=>a.last4==='0033').id");
+  setVal($("#smsText"), FIXTURES);
   click($("#smsParse"));
-  await until(() => $("#smsSave"), "sms review");
-  ok("SMS parser pre-fills amount", $('[data-rv="0"][data-f="amt"]').value === "3.75");
-  const txN = JSON.parse(win.localStorage.getItem("rial:transactions")).length;
-  click($("#smsSave"));
-  await until(() => JSON.parse(win.localStorage.getItem("rial:transactions")).length === txN + 1, "sms tx saved");
-  ok("SMS review saves a transaction (source=sms)",
-     JSON.parse(win.localStorage.getItem("rial:transactions")).some((t) => t.source === "sms" && t.amount === 3750));
+  await until(() => $("#rvSave"), "sms review");
+  ok("review shows all 5 parsed entries", $$(".rvrow").length === 5);
+  ok("review flags the internal transfer as not-spending", /NOT count as spending/.test($("#smsReview").textContent));
+  // bal0 from the raw ledger (S.tx may be mid-refresh from an earlier step)
+  const ledgerBal = (acctId) => {
+    let b = JSON.parse(win.localStorage.getItem("rial:accounts")).find(a => a.id === acctId).openingBalance || 0;
+    for (const t of allTx()) {
+      if (t.type === "transfer_internal") { if (t.fromAccountId === acctId) b -= t.amount; if (t.toAccountId === acctId) b += t.amount; continue; }
+      const ac = t.accountId || mainId;
+      if (ac !== acctId) continue;
+      if (t.type === "income" || t.type === "transfer_in") b += t.amount;
+      else b -= t.amount;
+    }
+    return b;
+  };
+  const bal0 = { main: ledgerBal(mainId), sav: ledgerBal(savId) };
+  const txN0 = allTx().length;
+  click($("#rvSave"));
+  await until(() => allTx().length === txN0 + 5, "5 saved", 100);
+  await sleep(150);
+  const saved = allTx();
+  const bySrc = saved.filter((t) => t.source === "sms");
+  eq("5 fixtures saved", bySrc.length, 5);
+  const salary = bySrc.find((t) => t.amount === 644000);
+  ok("F1 salary -> income", salary && salary.type === "income");
+  const sent = bySrc.find((t) => t.amount === 57000);
+  ok("F2 sent -> transfer_out with counterparty + account", sent && sent.type === "transfer_out" && /AHME/.test(sent.counterparty || ""));
+  const recv = bySrc.find((t) => t.amount === 2030);
+  ok("F3 received -> transfer_in", recv && recv.type === "transfer_in");
+  const internal = bySrc.find((t) => t.amount === 420000);
+  ok("F4 -> transfer_internal with from/to account ids", internal && internal.type === "transfer_internal" && internal.fromAccountId && internal.toAccountId);
+  const dominos = bySrc.find((t) => t.amount === 10120);
+  ok("F5 -> expense, category food, DOMINOS", dominos && dominos.type === "expense" && dominos.category === "Food");
+  ok("no full account number stored anywhere", !/0303XXXXXXXX/.test(JSON.stringify(saved)) && !saved.some((t) => /\d{8,}/.test(JSON.stringify(t.raw || ""))));
+  // explicit: grep the ENTIRE persisted store — every rial:* key — to prove only last4 survives
+  {
+    let dump = "";
+    for (let i = 0; i < win.localStorage.length; i++) {
+      const k = win.localStorage.key(i);
+      if (k && k.startsWith("rial:")) dump += "\n" + win.localStorage.getItem(k);
+    }
+    ok("grep stored data: no masked account token (NN..XX..NN) anywhere", !/\d{2,}\s*[X#*]{2,}\s*\d{2,}/.test(dump));
+    const textFields = [];
+    for (const t of saved) textFields.push(t.raw || "", t.counterparty || "", t.merchant || "", t.source || "");
+    for (const a of JSON.parse(win.localStorage.getItem("rial:accounts") || "[]")) textFields.push(a.label || "", a.last4 || "");
+    ok("grep stored data: no raw/counterparty/label text holds a 5+ digit run", !textFields.some((f) => /\d{5,}/.test(f)));
+    const accts = JSON.parse(win.localStorage.getItem("rial:accounts") || "[]");
+    ok("every stored account.last4 is 0–4 digits, nothing more", accts.every((a) => /^\d{0,4}$/.test(a.last4 || "")));
+    ok("every tx fromLast4/toLast4 is 0–4 digits", saved.every((t) => /^\d{0,4}$/.test(t.fromLast4 || "") && /^\d{0,4}$/.test(t.toLast4 || "")));
+  }
+
+  // THE critical assertion: the 420.000 internal transfer moved both balances but added ZERO spending
+  await sleep(100);
+  // spending contributed by ONLY the SMS rows (spend0 pre-dated an earlier move-to-savings, so compare per-source)
+  const smsSpend = metric(`S.tx.filter(t=>t.source==='sms' && F.isSpend(t)).reduce((s,t)=>s+t.amount,0)`);
+  eq("SMS spend = real outflows only (57 + 10.12); internal transfer contributes ZERO", smsSpend, 57000 + 10120);
+  eq("F.isSpend(internal transfer) is false", metric(`F.isSpend({type:'transfer_internal'})`), false);
+  const bal1 = { main: ledgerBal(mainId), sav: ledgerBal(savId) };
+  // Main: +644 salary, -57 sent, +2.03 received, -420 internal-out, -10.12 card
+  eq("internal transfer moved the Main balance by -420.000", bal1.main - bal0.main, 644000 - 57000 + 2030 - 420000 - 10120);
+  eq("internal transfer moved the Savings balance by +420.000", bal1.sav - bal0.sav, 420000);
+  ok("internal transfer not in category insights", !/420\.000/.test(metric("SCREENS.insights()")));
+  ok("internal transfer not in envelope drawdown", metric(`F.envelopeSpent('Food') >= 0 && !S.tx.some(t=>t.type==='transfer_internal' && t.category)`));
+
+  // re-paste the exact same batch -> all 5 flagged as duplicates, nothing imported
+  win.eval('openOverlay("sms")'); await until(() => $("#smsText"), "sms overlay 2");
+  setVal($("#smsText"), FIXTURES);
+  click($("#smsParse"));
+  await until(() => $("#smsReview").textContent.length > 10, "review 2");
+  ok("re-paste: all 5 marked duplicate", /5 duplicates skipped/.test($("#smsReview").textContent));
+  const beforeRe = allTx().length;
+  if ($("#rvSave")) click($("#rvSave"));
+  await sleep(200);
+  eq("re-paste imports zero", allTx().length, beforeRe);
+  win.eval("closeFull()"); await sleep(150);
+
+  // unrecognised message -> a needs-review row, never dropped
+  win.eval('openOverlay("sms")'); await until(() => $("#smsText"), "sms overlay 3");
+  setVal($("#smsText"), "Yr card bill OMR 12.000 is due soon via SomeBankApp");
+  click($("#smsParse"));
+  await until(() => $$(".rvrow").length === 1, "review 3");
+  ok("unknown message -> a review row with the raw text", /SomeBankApp/.test($("#smsReview").textContent));
+  ok("unknown message -> Save disabled until a type is chosen", $("#rvSave")?.disabled === true || !$("#rvSave"));
+  win.eval("closeFull()"); await sleep(150);
 
   // --- CSV import with dedupe ---
   win.eval('openOverlay("csv")');
@@ -370,6 +469,32 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   win.eval("(async () => { await handleThemeLinkFragment(); })()");
   await sleep(200);
   ok("malformed base64 link rejected, app untouched", JSON.stringify(beforeState()) === snap0);
+
+  // --- Accounts + daily allowance on the dashboard ---
+  click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "home"));
+  await until(() => $("#view").textContent.length > 20, "home rendered");
+  {
+    const homeTxt = $("#view").textContent;
+    ok("home shows a per-account balance row (Main)", /Main/.test(homeTxt));
+    ok("home shows the Savings account row too", /Savings/.test(homeTxt));
+    ok("home 'Accounts' card shows the combined total value",
+       /Accounts/.test(homeTxt) && homeTxt.includes(win.eval("U.fmtFull(F.combinedBalance())")));
+    const al = win.eval("JSON.stringify(F.dailyAllowance())");
+    const a = JSON.parse(al);
+    ok("dailyAllowance: today is never negative", a.today >= 0);
+    ok("dailyAllowance: today is never below the floor", a.today >= a.floor);
+    ok("dailyAllowance: exposes spentToday + remainingToday", typeof a.spentToday === "number" && typeof a.remainingToday === "number");
+    ok("dailyAllowance: internal transfer excluded from spentToday",
+       win.eval("(function(){var s=F.spentOn(U.ymd(new Date()));return !S.tx.some(t=>t.type==='transfer_internal'&&F.isSpend(t))})()"));
+    ok("home shows the allowance line (allowed / spent / left)", /(allowed|left|allowance)/i.test(homeTxt));
+    // the allowance detail overlay opens and is one clear readout, not a chart
+    win.eval('openOverlay("allowanceInfo")');
+    await until(() => $("#full.open"), "allowance overlay");
+    const ov = $("#full").textContent;
+    ok("allowance overlay shows allowed + spent + remaining", /allowed/i.test(ov) && /spent/i.test(ov) && /(left|remaining)/i.test(ov));
+    ok("allowance overlay has a floor input", !!$("#alFloor"));
+    win.eval("closeFull()"); await sleep(150);
+  }
 
   // Export backup builds valid JSON (stub blob)
   let exported = null;

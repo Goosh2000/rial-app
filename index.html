@@ -464,8 +464,8 @@ const U = (() => {
 
 /* ---- [B] STORE / DB ------------------------------------------------- */
 const DB = (() => {
-  const NAME = "rial", VERSION = 1;
-  const STORES = ["transactions","categories","recurring","wishlist","goals","envelopes","plans","notifications"];
+  const NAME = "rial", VERSION = 2;
+  const STORES = ["transactions","categories","recurring","wishlist","goals","envelopes","plans","notifications","accounts"];
   let db = null, useFallback = false;
 
   const open = () => new Promise((resolve) => {
@@ -531,9 +531,10 @@ const DB = (() => {
     async exportAll(){
       const out = { app:"rial", version:VERSION, exportedAt:new Date().toISOString(), meta:{}, data:{} };
       for (const s of STORES) out.data[s] = await api.getAll(s);
-      const keys = ["settings","theme","csvMapping","smsPatterns","lastBackup","onboarded",
+      const keys = ["settings","theme","csvMapping","lastBackup","onboarded",
                     "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","icsExportedAt",
-                    "themeSchedule","themeManual","userThemes"];
+                    "themeSchedule","themeManual","userThemes",
+                    "smsParserPatterns","merchantRules","allowanceFloor","allowanceStreak","allowanceStreakDate"];
       for (const k of keys) out.meta[k] = await api.meta(k);
       return out;
     },
@@ -564,14 +565,6 @@ const DEFAULT_CATS = [
   { name:"Salary",        icon:"💰", color:"#3ddc91", isIncome:true },
   { name:"Other income",  icon:"↕️", color:"#3ddc91", isIncome:true },
 ];
-const DEFAULT_SMS_PATTERNS = [
-  // Editable in Settings. Case-insensitive; `.` does NOT cross line breaks.
-  // Capture groups in order: 1 = amount, 2 = merchant, 3 = date.
-  { name:"Debit (generic)", dir:"expense",
-    re:"(?:purchase|debit|spent|paid|pos|payment|withdrawal)[^\\n]*?OMR\\s*([0-9,]+(?:\\.[0-9]+)?)\\s+(?:at|to|@|in)\\s+(.+?)(?:\\s+on\\s+(\\d{1,2}[-/ ][A-Za-z0-9]+[-/ ]\\d{2,4})|[.,;]|\\s+avl|\\s+bal|$)" },
-  { name:"Credit (generic)", dir:"income",
-    re:"(?:credited|credit|deposit|received|salary|refund|transfer)[^\\n]*?OMR\\s*([0-9,]+(?:\\.[0-9]+)?)(?:[^\\n]*?from\\s+(.+?))?(?:\\s+on\\s+(\\d{1,2}[-/ ][A-Za-z0-9]+[-/ ]\\d{2,4})|[.,;]|\\s+avl|\\s+bal|$)" },
-];
 
 async function seedIfNeeded(){
   const cats = await DB.getAll("categories");
@@ -579,21 +572,26 @@ async function seedIfNeeded(){
     let i = 0;
     for (const c of DEFAULT_CATS) await DB.put("categories", { id:U.uid(), sort:i++, uses:0, ...c });
   }
-  if ((await DB.meta("smsPatterns")) == null) await DB.setMeta("smsPatterns", DEFAULT_SMS_PATTERNS);
+  if ((await DB.getAll("accounts")).length === 0){
+    await DB.put("accounts", { id:U.uid(), label:"Main", last4:"", type:"current", isPrimary:true, openingBalance:0 });
+  }
+  if ((await DB.meta("smsParserPatterns")) == null) await DB.setMeta("smsParserPatterns", SmsParser.DEFAULT_PATTERNS);
+  if ((await DB.meta("merchantRules")) == null) await DB.setMeta("merchantRules", SmsParser.DEFAULT_MERCHANT_RULES);
   if ((await DB.meta("theme")) == null) await DB.setMeta("theme", "midnight");
   if ((await DB.meta("soundOn")) == null) await DB.setMeta("soundOn", false);
 }
 
 /* in-memory cache of frequently read collections */
-const S = { cats:[], tx:[], pending:[], recurring:[], wishlist:[], goals:[], envelopes:[], plans:[], notifs:[], settings:{} };
+const S = { cats:[], tx:[], pending:[], recurring:[], wishlist:[], goals:[], envelopes:[], plans:[], notifs:[], accounts:[], settings:{} };
 async function refresh(){
   let allTx;
-  [S.cats, allTx, S.recurring, S.wishlist, S.goals, S.envelopes, S.plans, S.notifs] = await Promise.all([
+  [S.cats, allTx, S.recurring, S.wishlist, S.goals, S.envelopes, S.plans, S.notifs, S.accounts] = await Promise.all([
     DB.getAll("categories"), DB.getAll("transactions"), DB.getAll("recurring"),
     DB.getAll("wishlist"), DB.getAll("goals"), DB.getAll("envelopes"),
-    DB.getAll("plans"), DB.getAll("notifications"),
+    DB.getAll("plans"), DB.getAll("notifications"), DB.getAll("accounts"),
   ]);
   S.cats.sort((a,b)=>(a.sort||0)-(b.sort||0));
+  S.accounts.sort((a,b)=>(b.isPrimary?1:0)-(a.isPrimary?1:0) || (a.label||"").localeCompare(b.label||""));
   allTx.sort((a,b)=>b.ts-a.ts);
   S.tx = allTx.filter(t => !t.pending);          // confirmed only — all math uses this
   S.pending = allTx.filter(t => t.pending);      // auto-logged recurring awaiting one-tap confirm
@@ -607,7 +605,6 @@ async function refresh(){
     lastBackup: await DB.meta("lastBackup", null),
     streak: await DB.meta("streak", 0),
     csvMapping: await DB.meta("csvMapping", null),
-    smsPatterns: await DB.meta("smsPatterns", DEFAULT_SMS_PATTERNS),
     icsExportedAt: await DB.meta("icsExportedAt", null),
     icsSignature: await DB.meta("icsSignature", null),
     goalsDone: await DB.meta("goalsDone", []),
@@ -615,18 +612,62 @@ async function refresh(){
     themeSchedule: await DB.meta("themeSchedule", { mode:"off", base:"midnight", windows:[], systemLight:"paper", systemDark:"midnight" }),
     themeManual: await DB.meta("themeManual", null),
     userThemes: await DB.meta("userThemes", []),
+    smsParserPatterns: await DB.meta("smsParserPatterns", SmsParser.DEFAULT_PATTERNS),
+    merchantRules: await DB.meta("merchantRules", SmsParser.DEFAULT_MERCHANT_RULES),
+    allowanceFloor: await DB.meta("allowanceFloor", 0),
+    allowanceStreak: await DB.meta("allowanceStreak", 0),
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
 const catByName = (n) => S.cats.find(c => c.name === n);
+/* accounts */
+const primaryAccount = () => S.accounts.find(a => a.isPrimary) || S.accounts[0] || null;
+const accountById = (id) => S.accounts.find(a => a.id === id) || null;
+const accountByLast4 = (l4) => l4 ? S.accounts.find(a => a.last4 === l4) : null;
+const accountLast4Set = () => new Set(S.accounts.map(a => a.last4).filter(Boolean));
+const acctLabel = (id) => (accountById(id) || {}).label || "—";
+const primaryId = () => (primaryAccount() || {}).id || null;
 const catFor = (t) => catByName(t.category) || { icon:"•", color:"var(--text-faint)", name:t.category||"Other" };
 
 /* ---- [D] FINANCE MATH --------------------------------------------- */
+/* transaction-type semantics:
+ *   income          money in from outside            -> counts as income
+ *   transfer_in     money received from a person     -> counts as income
+ *   expense         money out to outside             -> counts as spending
+ *   transfer_out    money sent to a person           -> counts as spending
+ *   transfer        (legacy) move to a savings goal  -> counts as spending (STS stays honest)
+ *   transfer_internal  between MY OWN accounts       -> NEVER spending, NEVER income,
+ *                                                       nets to zero, never touches an envelope
+ */
 const F = {
+  isIncome:   (t) => t.type === "income" || t.type === "transfer_in",
+  isSpend:    (t) => t.type === "expense" || t.type === "transfer_out" || t.type === "transfer",
+  isInternal: (t) => t.type === "transfer_internal",
+  isRealExpense: (t) => t.type === "expense",   // only these carry a spending category
+
   monthTx(mk = U.monthKey()){ return S.tx.filter(t => (t.month || U.monthKey(new Date(t.ts))) === mk); },
-  incomeThisMonth(mk){ return U.sum(F.monthTx(mk).filter(t => t.type === "income"), t => t.amount); },
-  spentThisMonth(mk){ return U.sum(F.monthTx(mk).filter(t => t.type !== "income"), t => t.amount); },
+  incomeThisMonth(mk){ return U.sum(F.monthTx(mk).filter(F.isIncome), t => t.amount); },
+  spentThisMonth(mk){ return U.sum(F.monthTx(mk).filter(F.isSpend), t => t.amount); },
   netThisMonth(mk){ return F.incomeThisMonth(mk) - F.spentThisMonth(mk); },
+
+  /* --- accounts --- */
+  accountBalance(id){
+    const a = accountById(id); if (!a) return 0;
+    let bal = a.openingBalance || 0;
+    for (const t of S.tx){
+      if (t.type === "transfer_internal"){
+        if (t.fromAccountId === id) bal -= t.amount;
+        if (t.toAccountId === id) bal += t.amount;
+        continue;
+      }
+      const acct = t.accountId || primaryId();      // legacy tx -> primary
+      if (acct !== id) continue;
+      if (F.isIncome(t)) bal += t.amount;
+      else if (F.isSpend(t) || t.type === "expense") bal -= t.amount;
+    }
+    return bal;
+  },
+  combinedBalance(){ return U.sum(S.accounts, a => F.accountBalance(a.id)); },
 
   fixedCommitments(){
     // sum of active recurring items normalised to a monthly figure
@@ -643,12 +684,18 @@ const F = {
     return Math.round(inc * (S.settings.savingsTargetPct || 0) / 100);
   },
   monthTransfers(mk = U.monthKey()){ return U.sum(F.monthTx(mk).filter(t => t.type === "transfer"), t => t.amount); },
+  goalContributions(mk = U.monthKey()){
+    // planned goal funding for this month (plan) OR actual savings transfers so far
+    const p = F.planFor(mk);
+    const planned = p ? U.sum(p.fundedGoals || [], g => g.amount || 0) : 0;
+    return Math.max(planned, F.monthTransfers(mk));
+  },
 
   /* --- envelopes (Monthly Plan) --- */
   planFor(mk = U.monthKey()){ return S.plans.find(p => p.month === mk) || null; },
   envelopesFor(mk = U.monthKey()){ return S.envelopes.filter(e => e.month === mk).sort((a,b) => (a.sort||0)-(b.sort||0)); },
   envelopeSpent(cat, mk = U.monthKey()){
-    return U.sum(F.monthTx(mk).filter(t => t.type === "expense" && t.category === cat), t => t.amount);
+    return U.sum(F.monthTx(mk).filter(t => F.isRealExpense(t) && t.category === cat), t => t.amount);
   },
   allocatedTotal(mk = U.monthKey()){ return U.sum(F.envelopesFor(mk), e => e.allocated || 0); },
   unallocated(mk = U.monthKey()){
@@ -728,7 +775,7 @@ const F = {
       const d = new Date(); d.setDate(d.getDate() - i);
       const key = U.ymd(d);
       const dayTx = S.tx.filter(t => U.ymd(new Date(t.ts)) === key);
-      out.push({ key, spent: U.sum(dayTx.filter(t=>t.type!=="income"), t=>t.amount) });
+      out.push({ key, spent: U.sum(dayTx.filter(F.isSpend), t=>t.amount) });
     }
     return out;
   },
@@ -738,9 +785,76 @@ const F = {
                       .sort((a,b) => a.nextDue - b.nextDue);
   },
   roundupSaved(mk = U.monthKey()){
-    return U.sum(F.monthTx(mk).filter(t => t.type !== "income"), t => {
+    return U.sum(F.monthTx(mk).filter(F.isRealExpense), t => {
       const r = 500 - (t.amount % 500); return r === 500 ? 0 : r;
     });
+  },
+  spentOn(ymd){
+    return U.sum(S.tx.filter(t => U.ymd(new Date(t.ts)) === ymd && (t.type === "expense" || t.type === "transfer_out")), t => t.amount);
+  },
+
+  /* --- daily allowance with rolling 7-day correction --- */
+  dailyAllowance(now = new Date()){
+    const mk = U.monthKey(now);
+    const dim = U.daysInMonth(mk);
+    const dom = Number(U.ymd(now).slice(8, 10));
+    const daysLeft = dim - dom + 1;                 // includes today
+    const floor = Math.max(0, S.settings.allowanceFloor || 0);
+
+    const p = F.planFor(mk);
+    const income = p ? p.salaryAmount : (S.settings.monthlyIncome || F.incomeThisMonth(mk));
+    const commitments = F.fixedCommitments();
+    const goals = F.goalContributions(mk);
+    const envObligations = U.sum(F.envelopesFor(mk),
+      e => Math.max(0, (e.allocated || 0) - F.envelopeSpent(e.category, mk)));   // envelope money not yet spent
+    const pool = income - commitments - goals - envObligations;
+    // flat per-day target for the whole month. the rolling correction below adjusts today's
+    // number from this stable base; dividing by days-*left* here would make the target jump
+    // around daily and double-count an overage the correction already handles.
+    const base = Math.round(pool / Math.max(1, dim));
+
+    // cumulative position over COMPLETED days (1..dom-1): actual spend vs what the flat base allowed.
+    // today's own spending isn't corrected until tomorrow (rolling, not same-day).
+    let spentPrior = 0;
+    for (let d = 1; d < dom; d++){
+      spentPrior += F.spentOn(`${mk}-${String(d).padStart(2, "0")}`);
+    }
+    const carryover = spentPrior - base * (dom - 1);   // +ve = behind (overspent), -ve = ahead (underspent)
+    const spreadDays = Math.min(7, Math.max(1, daysLeft));
+    const correction = Math.round(carryover / spreadDays);   // subtract from base
+    let today = base - correction;
+
+    const spentToday = F.spentOn(U.ymd(now));
+    const yesterdayYmd = U.ymd(new Date(now.getTime() - 86400000));
+    const yesterdayOver = mk === U.monthKey(new Date(now.getTime() - 86400000))
+      ? Math.max(0, F.spentOn(yesterdayYmd) - base) : 0;
+
+    // impossible case: even spending nothing above the floor, the remaining days can't absorb the overage
+    const maxAbsorb = (base - floor) * daysLeft;
+    const impossible = carryover > 0 && carryover > maxAbsorb + 1;
+    let message = null;
+    if (impossible){
+      message = "You're " + U.fmt(carryover) + " over and the days left can't absorb it above your floor of " + U.fmt(floor) + "/day. Something has to give.";
+    } else if (carryover > 0 && correction > 0){
+      message = "Yesterday you went over by " + U.fmt(yesterdayOver > 0 ? yesterdayOver : carryover) +
+        " — your daily allowance is " + U.fmt(Math.max(floor, today)) + " for the next " +
+        (spreadDays === 1 ? "day" : spreadDays + " days") + " instead of " + U.fmt(base) + ".";
+    } else if (carryover < -1000){
+      message = "You're " + U.fmt(-carryover) + " under — your allowance has risen to " + U.fmt(today) + "/day.";
+    }
+
+    const displayToday = Math.max(floor, today);    // never advise negative/zero as an allowance
+    return {
+      base, today: displayToday, rawToday: today, floor,
+      spentToday, remainingToday: displayToday - spentToday,
+      carryover, correction, spreadDays, daysLeft,
+      impossible, message,
+      options: impossible ? [
+        "Push a savings-goal date back",
+        "Lower a goal's monthly contribution",
+        "Accept a smaller month-end balance",
+      ] : [],
+    };
   },
 };
 
@@ -813,12 +927,30 @@ SCREENS.home = () => {
   const roundup = F.roundupSaved(mk);
   const streak = S.settings.streak || 0;
   const nc = notifCount();
+  const al = F.dailyAllowance();
+  const multiAcct = S.accounts.length > 1;
   return `
   <div class="pagehead">
     <div><h1>Home</h1><span class="sub">${new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</span></div>
     <button id="bell" style="position:relative;font-size:20px;padding:8px;min-height:44px;min-width:44px">🔔${nc?`<span class="badge-dot">${nc}</span>`:""}</button>
   </div>
   ${sts.envelopeAware ? `<div class="pill tiny" style="margin:0 2px 10px">envelope-aware · ${monthName(mk).split(" ")[0]} plan active</div>` : ""}
+
+  <div class="card tight">
+    <div class="row between" style="margin-bottom:6px"><h3 style="font-size:14px;color:var(--text-dim)">${multiAcct ? "Accounts" : "Balance"}</h3>
+      <span class="mono" style="font-weight:750">${U.fmtFull(F.combinedBalance())}</span></div>
+    ${multiAcct ? S.accounts.map(a => `<div class="row between tiny" style="padding:3px 0">
+      <span>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:""}${a.isPrimary?" ·":""}</span>
+      <span class="mono">${U.fmt(F.accountBalance(a.id))}</span></div>`).join("")
+      : `<div class="tiny faint">${esc(S.accounts[0]?.label||"Main")}${S.accounts[0]?.last4?` ····${esc(S.accounts[0].last4)}`:""}</div>`}
+  </div>
+
+  <div class="card tight" data-open="allowanceInfo" style="cursor:pointer">
+    <div class="row between"><h3 style="font-size:14px;color:var(--text-dim)">Today's allowance</h3>
+      <span class="mono" style="font-weight:750;color:${al.remainingToday<0?'var(--neg)':'var(--pos)'}">${U.fmt(al.remainingToday)} left</span></div>
+    <div class="tiny faint mono" style="margin-top:2px">${U.fmt(al.today)} allowed · ${U.fmt(al.spentToday)} spent today${al.correction>0?` · ${U.fmt(al.base)} normally`:al.correction<0?` · up from ${U.fmt(al.base)}`:""}</div>
+    ${al.message ? `<div class="tiny" style="margin-top:6px;color:${al.impossible?'var(--neg)':al.carryover<0?'var(--pos)':'var(--warn)'}">${esc(al.message)}</div>` : ""}
+  </div>
 
   <div class="card">
     <div class="hero">
@@ -873,12 +1005,32 @@ SCREENS.home = () => {
 
 function weekNumbers(){
   const start = U.todayTs() - 6*86400000;
-  const wk = S.tx.filter(t => t.ts >= start && t.type !== "income");
+  const wk = S.tx.filter(t => t.ts >= start && F.isSpend(t));
   const biggest = wk.reduce((m,t)=>Math.max(m,t.amount),0);
-  const byCat = U.groupBy(wk, t => t.category);
+  const byCat = U.groupBy(wk.filter(F.isRealExpense), t => t.category);
   let topCat = null, topV = 0;
   for (const c in byCat){ const v = U.sum(byCat[c], t=>t.amount); if (v > topV){ topV = v; topCat = c; } }
   return { out:U.sum(wk,t=>t.amount), txn:wk.length, biggest, topCat };
+}
+const TX_MOVED_TYPES = new Set(["transfer_internal"]);
+function txRowHTML(t){
+  const c = catFor(t);
+  if (t.type === "transfer_internal"){
+    return `<div class="tx" data-tx="${t.id}" style="opacity:.6">
+      <div class="ic">↔</div>
+      <div class="mid"><div class="t1">Moved ${esc(acctLabel(t.fromAccountId))} → ${esc(acctLabel(t.toAccountId))}</div>
+        <div class="t2">internal transfer · not spending</div></div>
+      <div class="amt mono faint">${U.fmt(t.amount)}</div>
+    </div>`;
+  }
+  const isIn = F.isIncome(t);
+  const acct = t.accountId ? accountById(t.accountId) : null;
+  return `<div class="tx" data-tx="${t.id}">
+    <div class="ic">${t.type==="transfer_out"?"↗":t.type==="transfer_in"?"↙":c.icon}</div>
+    <div class="mid"><div class="t1">${esc(t.note || t.counterparty || t.category || "—")}</div>
+      <div class="t2">${esc(t.type==="transfer_out"||t.type==="transfer_in"?(t.counterparty?"to/from "+t.counterparty:"person"):t.category||"")}${acct&&S.accounts.length>1?" · "+esc(acct.label):""}${t.source&&t.source!=="manual"?" · "+t.source:""}</div></div>
+    <div class="amt mono ${isIn?"pos":""}">${isIn?"+":""}${U.fmt(t.amount)}</div>
+  </div>`;
 }
 
 let txFilter = { q:"", cat:null };
@@ -901,18 +1053,10 @@ SCREENS.tx = () => {
   </div>
   ${keys.length ? keys.map(k => {
     const items = groups[k].sort((a,b)=>b.ts-a.ts);
-    const dayNet = U.sum(items, t => t.type==="income" ? t.amount : -t.amount);
+    const dayNet = U.sum(items, t => F.isInternal(t) ? 0 : F.isIncome(t) ? t.amount : -t.amount);
     return `<div class="tx-day card">
       <div class="dhead"><span>${U.relDay(U.parseYMD(k))}</span><span class="mono">${U.fmt(dayNet,{plus:dayNet>0})}</span></div>
-      ${items.map(t => {
-        const c = catFor(t);
-        return `<div class="tx" data-tx="${t.id}">
-          <div class="ic">${c.icon}</div>
-          <div class="mid"><div class="t1">${esc(t.note || t.category)}</div>
-            <div class="t2">${esc(t.category)}${t.source&&t.source!=="manual"?" · "+t.source:""}</div></div>
-          <div class="amt mono ${t.type==="income"?"pos":""}">${t.type==="income"?"+":""}${U.fmt(t.amount)}</div>
-        </div>`;
-      }).join("")}
+      ${items.map(txRowHTML).join("")}
     </div>`;
   }).join("") : emptyState("≡","No transactions yet","Tap + to add your first one.")}
   `;
@@ -1114,16 +1258,16 @@ function pendingCardHTML(){
 SCREENS.insights = () => {
   const mk = U.monthKey();
   const prev = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return U.monthKey(d); })();
-  const cur = U.groupBy(F.monthTx(mk).filter(t=>t.type!=="income"), t=>t.category);
-  const old = U.groupBy(F.monthTx(prev).filter(t=>t.type!=="income"), t=>t.category);
+  const cur = U.groupBy(F.monthTx(mk).filter(F.isRealExpense), t=>t.category);
+  const old = U.groupBy(F.monthTx(prev).filter(F.isRealExpense), t=>t.category);
   const cats = [...new Set([...Object.keys(cur), ...Object.keys(old)])];
   const curV = Object.fromEntries(cats.map(c => [c, U.sum(cur[c]||[], t=>t.amount)]));
   const oldV = Object.fromEntries(cats.map(c => [c, U.sum(old[c]||[], t=>t.amount)]));
   const max = Math.max(1, ...cats.map(c => Math.max(curV[c], oldV[c])));
   cats.sort((a,b) => curV[b] - curV[a]);
-  const biggest = F.monthTx(mk).filter(t=>t.type!=="income").sort((a,b)=>b.amount-a.amount).slice(0,5);
+  const biggest = F.monthTx(mk).filter(F.isRealExpense).sort((a,b)=>b.amount-a.amount).slice(0,5);
   const spent = F.spentThisMonth(mk), pace = spent / U.dayOfMonth(), projected = Math.round(pace * U.daysInMonth(mk));
-  const wkend = U.sum(F.monthTx(mk).filter(t=>t.type!=="income" && U.isWeekend(t.ts)), t=>t.amount);
+  const wkend = U.sum(F.monthTx(mk).filter(t=>F.isSpend(t) && U.isWeekend(t.ts)), t=>t.amount);
   const wk = spent - wkend;
   return `
   <div class="pagehead"><h1>Insights</h1><span class="sub">${monthName(mk)}</span></div>
@@ -1240,6 +1384,7 @@ function handleAct(act, d){
     "open-wrapped": () => openWrapped(prevMonthKey()),
     "edit-cats": () => openOverlay("cats"),
     "edit-sms": () => openOverlay("smsPatterns"),
+    "edit-accounts": () => openOverlay("accounts"),
     "share-theme-link": copyShareLink,
     "share-theme-qr": showThemeQr,
     "del-user-theme": () => deleteUserTheme(d.id),
@@ -1252,10 +1397,18 @@ let draft = null;
 function newDraft(){
   const mru = S.cats.filter(c => !c.isIncome).sort((a,b) => (b.uses||0)-(a.uses||0))[0];
   return { id:null, raw:"0", type:"expense", category: mru ? mru.name : "Other", note:"",
-           ymd: U.ymd(), source:"manual" };
+           ymd: U.ymd(), source:"manual",
+           accountId: primaryId(),
+           fromAccountId: primaryId(), toAccountId: (S.accounts[1]||{}).id || null };
+}
+function acctSelectHTML(id, selected){
+  return `<select id="${id}">${S.accounts.map(a =>
+    `<option value="${a.id}" ${selected===a.id?"selected":""}>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:""}</option>`).join("")}</select>`;
 }
 function keypadHTML(){
   const d = draft;
+  const multi = S.accounts.length > 1;
+  const isMove = d.type === "transfer_internal";
   const cats = S.cats.filter(c => d.type === "income" ? c.isIncome : !c.isIncome);
   const val = displayAmount(d.raw);
   return `
@@ -1263,12 +1416,22 @@ function keypadHTML(){
   <div class="seg" style="margin-bottom:10px">
     <button data-type="expense" aria-pressed="${d.type==="expense"}">Expense</button>
     <button data-type="income" aria-pressed="${d.type==="income"}">Income</button>
+    ${multi ? `<button data-type="transfer_internal" aria-pressed="${isMove}">Move</button>` : ""}
   </div>
   <div id="keypad">
     <div class="amountline"><span class="cur">OMR</span><span class="val mono" id="kpVal">${val}</span></div>
-    <div class="scroll-x" style="margin:8px 0 2px">
-      ${cats.map(c => `<button class="chip" data-cat="${esc(c.name)}" aria-pressed="${d.category===c.name}">${c.icon} ${esc(c.name)}</button>`).join("")}
-    </div>
+    ${isMove ? `
+      <div class="row" style="gap:8px;margin:8px 0 4px">
+        <div class="field" style="flex:1;margin:0"><label>From</label>${acctSelectHTML("kpFrom", d.fromAccountId)}</div>
+        <div class="field" style="flex:1;margin:0"><label>To</label>${acctSelectHTML("kpTo", d.toAccountId)}</div>
+      </div>
+      <div class="tiny faint" style="margin:0 2px 4px">Between your own accounts — never counted as spending.</div>
+    ` : `
+      ${multi ? `<div class="field" style="margin:8px 0 4px"><label>Account</label>${acctSelectHTML("kpAcct", d.accountId)}</div>` : ""}
+      <div class="scroll-x" style="margin:8px 0 2px">
+        ${cats.map(c => `<button class="chip" data-cat="${esc(c.name)}" aria-pressed="${d.category===c.name}">${c.icon} ${esc(c.name)}</button>`).join("")}
+      </div>
+    `}
     <div class="field" style="margin:10px 0 4px"><input id="kpNote" placeholder="Note (optional)" value="${esc(d.note)}" /></div>
     <div class="field" style="margin:0 0 6px"><input id="kpDate" type="date" value="${d.ymd}" /></div>
     <div class="keys">
@@ -1304,6 +1467,9 @@ function wireKeypad(){
     draft.category = b.dataset.cat;
     SHEET.querySelectorAll("[data-cat]").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.cat===draft.category)));
   }));
+  const accSel = document.getElementById("kpAcct"); if (accSel) accSel.addEventListener("change", () => draft.accountId = accSel.value);
+  const frSel = document.getElementById("kpFrom"); if (frSel) frSel.addEventListener("change", () => draft.fromAccountId = frSel.value);
+  const toSel = document.getElementById("kpTo"); if (toSel) toSel.addEventListener("change", () => draft.toAccountId = toSel.value);
   SHEET.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => {
     const k = b.dataset.k;
     if (k === "⌫") draft.raw = draft.raw.length > 1 ? draft.raw.slice(0,-1) : "0";
@@ -1326,15 +1492,23 @@ async function saveDraft(){
   const amount = draftBaisa();
   if (amount <= 0){ toast("Enter an amount"); return; }
   const ts = U.parseYMD(draft.ymd);
-  const rec = {
-    id: draft.id || U.uid(), ts, month: draft.ymd.slice(0,7),
-    amount, type: draft.type, category: draft.category, note: draft.note.trim(),
-    source: draft.source || "manual",
-  };
+  let rec;
+  if (draft.type === "transfer_internal"){
+    if (!draft.fromAccountId || !draft.toAccountId || draft.fromAccountId === draft.toAccountId){
+      toast("Pick two different accounts"); return;
+    }
+    rec = { id: draft.id || U.uid(), ts, month: draft.ymd.slice(0,7), amount,
+      type: "transfer_internal", fromAccountId: draft.fromAccountId, toAccountId: draft.toAccountId,
+      note: draft.note.trim(), source: draft.source || "manual" };
+  } else {
+    rec = { id: draft.id || U.uid(), ts, month: draft.ymd.slice(0,7), amount,
+      type: draft.type, category: draft.category, note: draft.note.trim(),
+      accountId: draft.accountId || primaryId(), source: draft.source || "manual" };
+  }
   const wasEdit = !!draft.id;
   await DB.put("transactions", rec);
   const c = catByName(draft.category);
-  if (c){ c.uses = (c.uses||0) + 1; await DB.put("categories", c); }
+  if (c && draft.type !== "transfer_internal"){ c.uses = (c.uses||0) + 1; await DB.put("categories", c); }
   await updateStreak();
   await refresh();
   if (S.settings.soundOn) tick();
@@ -1346,7 +1520,10 @@ async function saveDraft(){
 }
 async function editTx(id){
   const t = S.tx.find(x => x.id === id); if (!t) return;
-  draft = { id:t.id, raw:String(t.amount/1000), type:t.type, category:t.category, note:t.note||"", ymd:U.ymd(new Date(t.ts)), source:t.source };
+  draft = { id:t.id, raw:String(t.amount/1000), type:t.type, category:t.category, note:t.note||"",
+    ymd:U.ymd(new Date(t.ts)), source:t.source,
+    accountId: t.accountId || primaryId(),
+    fromAccountId: t.fromAccountId || primaryId(), toAccountId: t.toAccountId || (S.accounts[1]||{}).id || null };
   openSheet(keypadHTML()); wireKeypad();
 }
 async function deleteTx(id){
@@ -1368,6 +1545,17 @@ async function updateStreak(){
   streak = sts.perDay >= 0 ? streak + 1 : 0;
   await DB.setMeta("streak", streak); await DB.setMeta("streakDate", today);
   S.settings.streak = streak;
+  // allowance streak: was yesterday within its daily allowance?
+  const yYmd = U.ymd(new Date(Date.now() - 86400000));
+  if ((await DB.meta("allowanceStreakDate", null)) !== today){
+    const al = F.dailyAllowance();
+    let aStreak = await DB.meta("allowanceStreak", 0);
+    const yesterdayWithin = F.spentOn(yYmd) <= al.base + 1;
+    aStreak = yesterdayWithin ? aStreak + 1 : 0;
+    await DB.setMeta("allowanceStreak", aStreak);
+    await DB.setMeta("allowanceStreakDate", today);
+    S.settings.allowanceStreak = aStreak;
+  }
 }
 
 /* optional sound */
@@ -2027,42 +2215,299 @@ async function csvCommit(){
   await refresh(); closeFull(); toast(`Imported ${chosen.length} transactions`); render();
 }
 
-/* ============ [S] SMS PASTE PARSER + shared extractor =============== */
-function parseSMSBlock(text, patterns){
-  for (const p of patterns){
-    let re; try { re = new RegExp(p.re, "i"); } catch { continue; }
-    const m = text.match(re);
-    if (m){
-      const amount = U.toBaisa((m[1] || "").replace(/,/g, ""));
-      if (amount <= 0) continue;
-      return {
-        amount, type: p.dir || "expense",
-        note: (m[2] || "").trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "") || "(unknown merchant)",
-        ymd: m[3] ? guessDate(m[3]) : U.ymd(),
-        matched: p.name,
-      };
+/* ============ [S] SMS PARSER (from parser.js) + review flow ========= */
+/* PARSER:START */
+/* SMS parser — generated from parser.js by build-parser.js. Edit parser.js, then: node build-parser.js */
+const SmsParser = (() => {
+
+  /* --- money: string -> integer baisa (OMR x 1000), no floating point --- */
+  function toBaisa(s) {
+    const m = String(s).replace(/,/g, "").match(/(\d+)(?:\.(\d{1,3}))?/);
+    if (!m) return 0;
+    const whole = parseInt(m[1], 10);
+    const frac = (m[2] || "").padEnd(3, "0").slice(0, 3);
+    return whole * 1000 + parseInt(frac, 10);
+  }
+
+  /* --- dates: DD/MM/YYYY (day first) --- */
+  function parseDMY(s) {
+    const m = String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (!m) return null;
+    const d = +m[1], mo = +m[2], y = +m[3];
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return { y, m: mo, d, ymd: `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}` };
+  }
+  function makeTs(dmy, time) {
+    if (!dmy) return null;
+    if (time) {
+      const [hh, mm, ss] = time.split(":").map(Number);
+      return new Date(dmy.y, dmy.m - 1, dmy.d, hh, mm, ss || 0).getTime();
     }
+    // no time -> end of day, so it sorts last within that day
+    return new Date(dmy.y, dmy.m - 1, dmy.d, 23, 59, 59).getTime();
   }
-  // last-ditch: any "OMR <number>"
-  const m = text.match(/OMR\s*([0-9]+(?:\.[0-9]+)?)/i) || text.match(/([0-9]+\.[0-9]{3})/);
-  if (m && U.toBaisa(m[1]) > 0){
-    const credit = /credit|deposit|received|salary|refund/i.test(text);
-    return { amount:U.toBaisa(m[1]), type: credit?"income":"expense", note:"(check merchant)", ymd:U.ymd(), matched:"fallback" };
+
+  /* --- account tokens: keep ONLY the trailing 4 digits, discard everything else --- */
+  function last4(token) {
+    if (token == null) return null;
+    const digits = String(token).replace(/\D/g, "");   // transient; never stored
+    return digits.length >= 4 ? digits.slice(-4) : null;
   }
-  return null;
+  /* scrub masked/!masked account numbers out of free text before we store it */
+  function redactAccountNumbers(text) {
+    return String(text)
+      // masked bank tokens: digits + X/#/* + 4 trailing digits  ->  ••••1234
+      .replace(/\b[0-9]{2,}[X#*]{2,}[0-9]{4}\b/gi, (t) => "••••" + t.slice(-4))
+      // any bare run of 8+ digits (a full number that slipped through) -> ••••1234
+      .replace(/\b\d{8,}\b/g, (t) => "••••" + t.slice(-4));
+  }
+
+  /* --- merchant -> category --- */
+  const DEFAULT_MERCHANT_RULES = [
+    { match: "DOMINOS", category: "food" },
+    { match: "PIZZA", category: "food" },
+    { match: "KFC", category: "food" },
+    { match: "MCDONALD", category: "food" },
+    { match: "LULU", category: "food" },
+    { match: "CARREFOUR", category: "food" },
+    { match: "SPAR", category: "food" },
+    { match: "NESTO", category: "food" },
+    { match: "STARBUCKS", category: "food" },
+    { match: "COFFEE", category: "food" },
+    { match: "SUPERMARKET", category: "food" },
+    { match: "PHARMACY", category: "other" },
+    { match: "OOREDOO", category: "subscriptions" },
+    { match: "OMANTEL", category: "subscriptions" },
+    { match: "NETFLIX", category: "subscriptions" },
+    { match: "SPOTIFY", category: "subscriptions" },
+    { match: "SHELL", category: "transport" },
+    { match: "OOMCO", category: "transport" },
+    { match: "AL MAHA", category: "transport" },
+    { match: "PETROL", category: "transport" },
+    { match: "CAREEM", category: "transport" },
+    { match: "UBER", category: "transport" },
+    { match: "MARSOOL", category: "transport" },
+    { match: "TALABAT", category: "food" },
+    { match: "AMAZON", category: "other" },
+    { match: "NOON", category: "other" },
+  ];
+  function categorize(merchant, rules) {
+    if (!merchant) return null;
+    const up = String(merchant).toUpperCase();
+    for (const r of (rules || DEFAULT_MERCHANT_RULES)) {
+      if (r && r.match && up.includes(String(r.match).toUpperCase())) return r.category;
+    }
+    return null;
+  }
+
+  /* --- transfer type from the two ends (THE critical rule) --- */
+  function resolveTransferType(fromL4, toL4, ownSet) {
+    const own = ownSet instanceof Set ? ownSet : new Set(ownSet || []);
+    const fromMine = !!fromL4 && own.has(fromL4);
+    const toMine = !!toL4 && own.has(toL4);
+    if (fromMine && toMine) return "transfer_internal";  // both mine -> nets to zero, NOT spending
+    if (fromMine && !toMine) return "transfer_out";       // I sent money away
+    if (!fromMine && toMine) return "transfer_in";        // money arrived from elsewhere
+    return "review";                                      // can't attribute either end
+  }
+
+  /* --- built-in patterns. `groups` maps a field to a capture-group index. --- */
+  const DEFAULT_PATTERNS = [
+    {
+      id: "salary_credit",
+      name: "Salary / credit to account",
+      re: "^\\s*(.+?)\\s+OMR\\s+([\\d,]+\\.\\d{1,3})\\s+Credited to your Account\\s+(\\d{2}\\/\\d{2}\\/\\d{4})",
+      type: "income",
+      groups: { source: 1, amount: 2, date: 3 },
+    },
+    {
+      id: "sent_to_person",
+      name: "Sent to someone",
+      re: "You have sent OMR\\s+([\\d,]+\\.\\d{1,3})\\s+to\\s+(.+?)\\s+from your a\\/c\\s+([0-9X#*]+)\\s+on\\s+(\\d{2}\\/\\d{2}\\/\\d{4})(?:\\s+(\\d{2}:\\d{2}:\\d{2}))?",
+      type: "transfer_out",
+      groups: { amount: 1, counterparty: 2, fromAcct: 3, date: 4, time: 5 },
+    },
+    {
+      id: "received_from_person",
+      name: "Received from someone",
+      re: "You have received OMR\\s+([\\d,]+\\.\\d{1,3})\\s+from\\s+(.+?)(?:\\s+on\\s+(\\d{2}\\/\\d{2}\\/\\d{4}))?(?:\\s+(\\d{2}:\\d{2}:\\d{2}))?\\s*\\.?\\s*$",
+      type: "transfer_in",
+      groups: { amount: 1, counterparty: 2, date: 3, time: 4 },
+    },
+    {
+      id: "internal_transfer",
+      name: "Debited from one A/C, credited to another",
+      re: "OMR\\s+([\\d,]+\\.\\d{1,3})\\s+is debited from your A\\/C\\s+([0-9X#*]+)\\s+and credited to your A\\/C\\s+([0-9X#*]+)\\s+on\\s+(\\d{2}\\/\\d{2}\\/\\d{4})(?:\\s+(\\d{2}:\\d{2}:\\d{2}))?",
+      type: "transfer_auto",   // resolved via resolveTransferType
+      groups: { amount: 1, fromAcct: 2, toAcct: 3, date: 4, time: 5 },
+    },
+    {
+      id: "card_pos",
+      name: "Card / POS purchase",
+      re: "Card of a\\/c\\s+([0-9X#*]+)\\s+used for OMR\\s+([\\d,]+\\.\\d{1,3})\\s+at\\s+(.+?)\\s+on\\s+(\\d{2}\\/\\d{2}\\/\\d{4})(?:\\s+(\\d{2}:\\d{2}:\\d{2}))?",
+      type: "expense",
+      groups: { fromAcct: 1, amount: 2, merchant: 3, date: 4, time: 5 },
+    },
+  ];
+
+  function cleanName(s) {
+    return String(s || "").trim().replace(/\s+/g, " ").replace(/[.,;]+$/, "");
+  }
+
+  function dedupeKey(e) {
+    const acct = e.fromLast4 || e.toLast4 || "";
+    const stamp = e.ts != null ? e.ts : (e.ymd || "");
+    return [e.type, e.amount, acct, stamp, cleanName(e.merchant || e.counterparty || "")].join("|");
+  }
+
+  /* --- parse a single message block --- */
+  function parseOne(raw, ctx) {
+    ctx = ctx || {};
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return null;
+
+    const own = ctx.accountLast4 instanceof Set ? ctx.accountLast4 : new Set(ctx.accountLast4 || []);
+    const rules = ctx.rules || DEFAULT_MERCHANT_RULES;
+    const patterns = (ctx.patterns && ctx.patterns.length) ? ctx.patterns : DEFAULT_PATTERNS;
+    const now = ctx.now || Date.now();
+    const nowYmd = (() => { const d = new Date(now); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
+
+    for (const p of patterns) {
+      let re;
+      try { re = new RegExp(p.re, "i"); } catch { continue; }
+      const m = text.match(re);
+      if (!m) continue;
+      const g = p.groups || {};
+      const pick = (k) => (g[k] != null && m[g[k]] != null) ? m[g[k]] : null;
+
+      const amount = toBaisa(pick("amount") || "0");
+      const dmy = pick("date") ? parseDMY(pick("date")) : null;
+      const time = pick("time") || null;
+      const fromLast4 = pick("fromAcct") ? last4(pick("fromAcct")) : null;
+      const toLast4 = pick("toAcct") ? last4(pick("toAcct")) : null;
+      const merchant = pick("merchant") ? cleanName(pick("merchant")) : null;
+      const counterparty = pick("counterparty") ? cleanName(pick("counterparty")) : null;
+      const source = pick("source") ? cleanName(pick("source")) : null;
+
+      let type = p.type;
+      if (type === "transfer_auto") type = resolveTransferType(fromLast4, toLast4, own);
+
+      let category = null;
+      if (type === "expense") category = categorize(merchant, rules);
+      if (type === "income" && source && /salary/i.test(source)) category = "salary";
+
+      const ymd = dmy ? dmy.ymd : nowYmd;
+      const dateAssumed = !dmy;
+      const ts = dmy ? makeTs(dmy, time) : new Date(now).setHours(23, 59, 59, 0);
+
+      const entry = {
+        ok: true, matched: p.id, raw: redactAccountNumbers(text),
+        type, amount, ymd, time: time, ts, dateAssumed,
+        merchant, counterparty,
+        category: type === "income" ? (category || (source && /salary/i.test(source) ? "salary" : null)) : category,
+        fromLast4, toLast4,
+        source: source || (p.type === "income" ? "Salary" : null),
+      };
+      entry.dedupeKey = dedupeKey(entry);
+      // a matched internal-looking transfer that resolved to "review" (neither end mine) still surfaces
+      return entry;
+    }
+
+    // nothing matched — never drop it. Pull an amount if we can see one.
+    const amt = text.match(/OMR\s+([\d,]+\.\d{1,3})/i) || text.match(/([\d,]+\.\d{3})/);
+    const dmy = parseDMY(text);
+    const entry = {
+      ok: true, matched: "review", raw: redactAccountNumbers(text),
+      type: "review",
+      amount: amt ? toBaisa(amt[1]) : 0,
+      ymd: dmy ? dmy.ymd : nowYmd, time: null, ts: dmy ? makeTs(dmy, null) : new Date(now).setHours(23, 59, 59, 0),
+      dateAssumed: !dmy,
+      merchant: null, counterparty: null, category: null,
+      fromLast4: null, toLast4: null, source: null,
+    };
+    entry.dedupeKey = dedupeKey(entry);
+    return entry;
+  }
+
+  /* --- split a paste into message blocks and parse each --- */
+  function splitBlocks(text) {
+    return String(text || "")
+      .split(/\n\s*\n|\r\n\s*\r\n/)                 // blank line = message boundary
+      .flatMap((b) => b.split(/(?=Dear Customer,)/)) // some banks concat on one line
+      .map((b) => b.trim())
+      .filter((b) => b.length > 3);
+  }
+  function parseBatch(text, ctx) {
+    return splitBlocks(text).map((b) => parseOne(b, ctx)).filter(Boolean);
+  }
+
+  return {
+    parseOne, parseBatch, splitBlocks,
+    resolveTransferType, categorize, dedupeKey,
+    toBaisa, parseDMY, makeTs, last4, redactAccountNumbers, cleanName,
+    DEFAULT_PATTERNS, DEFAULT_MERCHANT_RULES,
+  };
+})();
+/* PARSER:END */
+
+const TYPE_LABELS = {
+  income: "Income", expense: "Expense", transfer_internal: "Moved (internal)",
+  transfer_out: "Sent to person", transfer_in: "Received from person", review: "⚠ Needs a type",
+};
+function parserCtx(){
+  return {
+    accountLast4: accountLast4Set(),
+    rules: S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES,
+    patterns: S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS,
+    now: Date.now(),
+  };
 }
-function splitBlocks(text){
-  return text.split(/\n\s*\n|\n(?=[A-Z][a-z]+\s*:)|\r/).map(s => s.trim()).filter(s => s.length > 6);
+function catNameFor(slug, type){
+  if (!slug){
+    return type === "income" || type === "transfer_in" ? "Other income" : "Other";
+  }
+  const hit = S.cats.find(c => c.name.toLowerCase() === slug.toLowerCase())
+    || S.cats.find(c => c.name.toLowerCase().includes(slug.toLowerCase()));
+  return hit ? hit.name : (slug === "salary" ? "Salary" : "Other");
 }
-let smsState = null;
+
+let reviewState = [];      // RVEntry[]
+function toReviewEntry(p){
+  const fromAcc = accountByLast4(p.fromLast4);
+  const toAcc = accountByLast4(p.toLast4);
+  const e = {
+    raw: p.raw, matched: p.matched, include: true,
+    amount: p.amount, amountStr: p.amount ? String(p.amount / 1000) : "",
+    type: p.type, ymd: p.ymd || U.ymd(), time: p.time || null, dateAssumed: !!p.dateAssumed,
+    merchant: p.merchant || null, counterparty: p.counterparty || null,
+    category: catNameFor(p.category, p.type),
+    originalCategory: catNameFor(p.category, p.type),
+    fromLast4: p.fromLast4 || null, toLast4: p.toLast4 || null,
+    fromAccountId: fromAcc ? fromAcc.id : null,
+    toAccountId: toAcc ? toAcc.id : null,
+    accountId: (fromAcc && fromAcc.id) || primaryId(),
+    dedupeKey: p.dedupeKey, rememberRule: false, dup: false,
+    unregistered: (!!p.fromLast4 && !fromAcc) || (!!p.toLast4 && !toAcc),
+  };
+  return e;
+}
+function markDuplicates(entries){
+  const existing = new Set(S.tx.map(t => t.importKey).filter(Boolean));
+  const seen = new Set();
+  for (const e of entries){
+    e.dup = existing.has(e.dedupeKey) || seen.has(e.dedupeKey);
+    if (e.dup) e.include = false;
+    seen.add(e.dedupeKey);
+  }
+}
 function smsHTML(){
   return `
   <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
   <div class="pagehead"><h1>Paste bank SMS</h1></div>
   <div class="card">
-    <p class="tiny faint" style="margin-bottom:10px">Paste one or more SMS alerts. Patterns are editable in
-      <button class="btn sm" data-act="edit-sms">SMS patterns</button>.</p>
-    <textarea id="smsText" rows="6" placeholder="Purchase of OMR 4.500 at LULU HYPERMARKET on 26-08-2026..." style="width:100%;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:12px;padding:10px"></textarea>
+    <p class="tiny faint" style="margin-bottom:10px">Paste one or more messages. Formats are editable in
+      <button class="btn sm" data-act="edit-sms">SMS formats</button>. Every entry goes to a review before saving.</p>
+    <textarea id="smsText" rows="7" placeholder="Salary OMR 644.000 Credited to your Account 26/08/2026." style="width:100%;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:12px;padding:10px"></textarea>
     <button class="btn primary block" id="smsParse" style="margin-top:10px">Parse</button>
   </div>
   <div id="smsReview"></div>
@@ -2070,69 +2515,121 @@ function smsHTML(){
 }
 function wireSMS(){
   FULL.querySelector("#smsParse").addEventListener("click", () => {
-    const blocks = splitBlocks(FULL.querySelector("#smsText").value);
-    smsReview(blocks.map(b => ({ raw:b, ...(parseSMSBlock(b, S.settings.smsPatterns) || { amount:0, type:"expense", note:"", ymd:U.ymd(), matched:"none" }) })));
+    const parsed = SmsParser.parseBatch(FULL.querySelector("#smsText").value, parserCtx());
+    if (!parsed.length){ toast("No messages found"); return; }
+    openReview(parsed, { anchor: "#smsReview", source: "sms" });
   });
-  // [data-act] buttons handled by the delegated FULL click listener
 }
-/* shared review UI for SMS-paste and OCR — amounts held as OMR strings */
-function normalizeReviewItems(parsed){
-  return parsed.map(p => ({
-    raw: p.raw || "", matched: p.matched || "",
-    amt: p.amount ? String(p.amount / 1000) : "",
-    type: p.type || "expense",
-    note: p.note && p.note !== "(unknown merchant)" && p.note !== "(check merchant)" ? p.note : "",
-    ymd: p.ymd || U.ymd(),
-    category: (p.type === "income") ? "Other income" : "Other",
-  }));
+
+/* ---- shared review UI (SMS + OCR) ---- */
+function reviewRowHTML(e, i){
+  const inp = 'style="background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px;min-height:36px"';
+  const isMove = e.type === "transfer_internal";
+  const isPerson = e.type === "transfer_out" || e.type === "transfer_in";
+  return `<div class="rvrow" style="padding:10px 0;border-bottom:1px solid var(--line);${e.dup?'opacity:.5':''}">
+    <label class="row" style="gap:8px;align-items:flex-start">
+      <input type="checkbox" data-rv="${i}" data-f="include" ${e.include?"checked":""}/>
+      <div style="flex:1">
+        <div class="tiny faint" style="margin-bottom:5px">${esc((e.raw||"").slice(0,110))}${(e.raw||"").length>110?"…":""}
+          ${e.matched && e.matched!=="review"?` · <i>${esc(e.matched)}</i>`:""}${e.dup?` · <b style="color:var(--warn)">duplicate</b>`:""}</div>
+        ${e.type==="review"?`<div class="tiny" style="color:var(--warn);margin-bottom:4px">Unrecognised — pick a type and check the details.</div>`:""}
+        ${isMove?`<div class="tiny" style="color:var(--accent);margin-bottom:4px">↔ Between your own accounts — will NOT count as spending.</div>`:""}
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <input data-rv="${i}" data-f="amountStr" inputmode="decimal" value="${esc(e.amountStr)}" placeholder="OMR" ${inp} style="width:88px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px"/>
+          <select data-rv="${i}" data-f="type" ${inp}>
+            ${["expense","income","transfer_out","transfer_in","transfer_internal","review"].map(t =>
+              `<option value="${t}" ${e.type===t?"selected":""}>${TYPE_LABELS[t]}</option>`).join("")}
+          </select>
+          <input data-rv="${i}" data-f="ymd" type="date" value="${e.ymd}" ${inp}/>
+        </div>
+        ${isMove ? `<div class="row" style="gap:6px;margin-top:6px">
+            <select data-rv="${i}" data-f="fromAccountId" ${inp}>${S.accounts.map(a=>`<option value="${a.id}" ${e.fromAccountId===a.id?"selected":""}>${esc(a.label)}</option>`).join("")}</select>
+            <span class="faint">→</span>
+            <select data-rv="${i}" data-f="toAccountId" ${inp}>${S.accounts.map(a=>`<option value="${a.id}" ${e.toAccountId===a.id?"selected":""}>${esc(a.label)}</option>`).join("")}</select>
+          </div>`
+          : `${S.accounts.length>1 ? `<select data-rv="${i}" data-f="accountId" ${inp} style="width:100%;margin-top:6px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px">
+              ${S.accounts.map(a=>`<option value="${a.id}" ${e.accountId===a.id?"selected":""}>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:""}</option>`).join("")}
+            </select>` : ""}
+          ${e.unregistered?`<div class="tiny" style="color:var(--warn);margin-top:4px">Card ····${esc(e.fromLast4||e.toLast4)} isn't a registered account — using ${esc(acctLabel(e.accountId))}.</div>`:""}`}
+        <input data-rv="${i}" data-f="${isPerson?'counterparty':'merchant'}" value="${esc((isPerson?e.counterparty:e.merchant)||'')}" placeholder="${isPerson?'person':'merchant / note'}" ${inp} style="width:100%;margin-top:6px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px"/>
+        ${(e.type==="expense") ? `
+          <select data-rv="${i}" data-f="category" ${inp} style="width:100%;margin-top:6px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px">
+            ${S.cats.map(c=>`<option ${e.category===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}
+          </select>
+          ${e.merchant && e.category !== e.originalCategory ? `<label class="row tiny" style="gap:6px;margin-top:5px"><input type="checkbox" data-rv="${i}" data-f="rememberRule" ${e.rememberRule?"checked":""}/> Remember ${esc((e.merchant||"").split(" ")[0])} → ${esc(e.category)}</label>` : ""}
+        ` : ""}
+      </div>
+    </label>
+  </div>`;
 }
-function reviewRowsHTML(items, showRaw){
-  const inp = 'style="background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:8px"';
-  return items.map((it,i) => `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-    ${showRaw ? `<div class="tiny faint" style="margin-bottom:6px">${esc(it.raw.slice(0,90))}${it.raw.length>90?"…":""}${it.matched?`  ·  <i>${esc(it.matched)}</i>`:""}</div>` : ""}
-    <div class="row" style="gap:8px">
-      <input data-rv="${i}" data-f="amt" inputmode="decimal" value="${esc(it.amt)}" placeholder="amount" ${inp} style="width:92px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:8px"/>
-      <select data-rv="${i}" data-f="type" ${inp}>
-        <option value="expense" ${it.type==="expense"?"selected":""}>out</option>
-        <option value="income" ${it.type==="income"?"selected":""}>in</option>
-      </select>
-      <input data-rv="${i}" data-f="ymd" type="date" value="${it.ymd}" ${inp}/>
-    </div>
-    <input data-rv="${i}" data-f="note" value="${esc(it.note)}" placeholder="merchant / note" ${inp} style="width:100%;margin-top:8px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:8px"/>
-    <select data-rv="${i}" data-f="category" ${inp} style="width:100%;margin-top:8px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:8px">
-      ${S.cats.map(c => `<option ${it.category===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}
-    </select>
-  </div>`).join("");
-}
-function wireReviewRows(){
+function renderReviewCard(anchor, source){
+  const kept = reviewState.filter(e => e.include);
+  const flagged = reviewState.filter(e => e.include && e.type === "review").length;
+  const dups = reviewState.filter(e => e.dup).length;
+  FULL.querySelector(anchor).innerHTML = `
+    <div class="card">
+      <b style="font-size:15px">Review ${reviewState.length}${dups?` · ${dups} duplicate${dups>1?"s":""} skipped`:""}</b>
+      <div class="tiny faint" style="margin:2px 0 6px">Internal transfers are flagged and excluded from spending. Fix anything, then save.</div>
+      ${reviewState.map((e,i) => reviewRowHTML(e,i)).join("")}
+      ${flagged ? `<div class="tiny" style="color:var(--warn);margin-top:8px">${flagged} entr${flagged>1?"ies":"y"} still need a type.</div>` : ""}
+      <button class="btn primary block" id="rvSave" style="margin-top:12px" ${flagged?"disabled style='margin-top:12px;opacity:.5'":""}>Save ${kept.length-flagged}</button>
+    </div>`;
   FULL.querySelectorAll("[data-rv]").forEach(el => el.addEventListener("input", () => {
-    reviewState[+el.dataset.rv][el.dataset.f] = el.value;
+    const e = reviewState[+el.dataset.rv], f = el.dataset.f;
+    if (f === "include" || f === "rememberRule") e[f] = el.checked;
+    else e[f] = el.value;
+    if (f === "type"){
+      if (e.type === "expense" && (!e.category || e.category === "Other income")) e.category = e.originalCategory || "Other";
+      renderReviewCard(anchor, source);   // type change reshapes the row
+    }
+    if (f === "amountStr") e.amount = U.toBaisa(el.value);
   }));
+  const btn = FULL.querySelector("#rvSave");
+  if (btn && !flagged) btn.addEventListener("click", () => saveReview(source));
 }
-let reviewState = [];
-async function saveReviewItems(source){
-  let n = 0;
-  for (const it of reviewState){
-    const amt = U.toBaisa(it.amt); if (amt <= 0) continue;
-    const ymd = /^\d{4}-\d{2}-\d{2}$/.test(it.ymd) ? it.ymd : U.ymd();
-    await DB.put("transactions", { id:U.uid(), ts:U.parseYMD(ymd), month:ymd.slice(0,7), amount:amt,
-      type:it.type, category: it.category || (it.type==="income"?"Other income":"Other"),
-      note:(it.note||"").trim(), source });
+function openReview(parsed, opts){
+  reviewState = parsed.map(toReviewEntry);
+  markDuplicates(reviewState);
+  renderReviewCard(opts.anchor, opts.source);
+}
+async function saveReview(source){
+  let n = 0; const learnedRules = [];
+  for (const e of reviewState){
+    if (!e.include || e.type === "review") continue;
+    const amt = U.toBaisa(e.amountStr); if (amt <= 0) continue;
+    const ymd = /^\d{4}-\d{2}-\d{2}$/.test(e.ymd) ? e.ymd : U.ymd();
+    const ts = e.time ? U.parseYMD(ymd) + hmsToMs(e.time) - 12*3600000 : U.parseYMD(ymd) + 43199000;
+    const base = { id: U.uid(), ts, month: ymd.slice(0,7), amount: amt, source, importKey: e.dedupeKey };
+    let rec;
+    if (e.type === "transfer_internal"){
+      if (!e.fromAccountId || !e.toAccountId || e.fromAccountId === e.toAccountId) continue;
+      rec = { ...base, type: "transfer_internal", fromAccountId: e.fromAccountId, toAccountId: e.toAccountId,
+        note: (e.merchant || e.counterparty || "").trim() };
+    } else if (e.type === "transfer_out" || e.type === "transfer_in"){
+      rec = { ...base, type: e.type, accountId: e.accountId || primaryId(),
+        counterparty: (e.counterparty || "").trim(), category: e.type==="transfer_in"?"Other income":"Other",
+        note: (e.counterparty || "").trim() };
+    } else {
+      rec = { ...base, type: e.type, accountId: e.accountId || primaryId(),
+        category: e.type === "income" ? (e.category || "Other income") : (e.category || "Other"),
+        note: (e.merchant || "").trim() };
+      if (e.type === "expense" && e.rememberRule && e.merchant && e.category){
+        learnedRules.push({ match: (e.merchant || "").split(" ")[0].toUpperCase(), category: (e.category || "").toLowerCase() });
+      }
+    }
+    await DB.put("transactions", rec);
     n++;
   }
-  await refresh(); closeFull(); toast(n ? `Saved ${n}` : "Nothing to save"); render();
+  if (learnedRules.length){
+    const rules = (S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES).slice();
+    for (const r of learnedRules) if (!rules.some(x => x.match === r.match)) rules.unshift(r);
+    await DB.setMeta("merchantRules", rules);
+  }
+  await refresh(); await updateStreak(); closeFull();
+  toast(n ? `Saved ${n}${learnedRules.length?` · learned ${learnedRules.length} rule${learnedRules.length>1?"s":""}`:""}` : "Nothing to save");
+  render();
 }
-function smsReview(parsed){
-  reviewState = normalizeReviewItems(parsed);
-  FULL.querySelector("#smsReview").innerHTML = `
-    <div class="card">
-      <b style="font-size:15px">Review ${reviewState.length} — fix anything, then save</b>
-      ${reviewRowsHTML(reviewState, true)}
-      <button class="btn primary block" id="smsSave" style="margin-top:12px">Save all</button>
-    </div>`;
-  wireReviewRows();
-  FULL.querySelector("#smsSave").addEventListener("click", () => saveReviewItems("sms"));
-}
+function hmsToMs(hms){ const [h,m,s] = String(hms).split(":").map(Number); return (h*3600 + m*60 + (s||0)) * 1000; }
 
 /* ============ [T] SCREENSHOT OCR (Tesseract.js, on-device) ========= */
 const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -2178,29 +2675,21 @@ function wireOCR(){
       text = res.data.text || "";
     } catch (err){ prog.textContent = "⚠️ OCR failed: " + err.message; return; }
     prog.textContent = "Done. Review below.";
-    const blocks = splitBlocks(text);
-    const cand = blocks.length ? blocks : [text];
-    const items = cand.map(b => ({ raw:b, ...(parseSMSBlock(b, S.settings.smsPatterns) || { amount:0, type:"expense", note:"", ymd:U.ymd(), matched:"none" }) }))
-                      .filter(it => it.amount > 0 || it.raw.length > 20);
-    ocrReview(thumb, items.length ? items : [{ raw:text, amount:0, type:"expense", note:"", ymd:U.ymd(), matched:"none" }]);
-  });
-}
-function ocrReview(thumb, parsed){
-  reviewState = normalizeReviewItems(parsed);
-  const rawText = parsed.map(i => i.raw).join("\n---\n");
-  FULL.querySelector("#ocrReview").innerHTML = `
-    <div class="card">
-      <div class="row" style="gap:12px;align-items:flex-start">
-        <img src="${thumb}" style="width:120px;border-radius:10px;border:1px solid var(--line)"/>
-        <div class="tiny faint">OCR is imperfect on bank UIs — check every field before saving.</div>
+    let parsed = SmsParser.parseBatch(text, parserCtx());
+    if (!parsed.length){
+      parsed = [SmsParser.parseOne(text, parserCtx())].filter(Boolean);
+    }
+    if (!parsed.length){ prog.textContent = "No transaction found in the image."; return; }
+    FULL.querySelector("#ocrReview").innerHTML = `
+      <div class="card">
+        <div class="row" style="gap:12px;align-items:flex-start">
+          <img src="${thumb}" style="width:110px;border-radius:10px;border:1px solid var(--line)"/>
+          <div class="tiny faint">OCR is imperfect on bank UIs — check every field. Internal transfers are flagged.</div>
+        </div>
       </div>
-      <div class="divider"></div>
-      ${reviewRowsHTML(reviewState, false)}
-      <button class="btn primary block" id="ocrSave" style="margin-top:12px">Save</button>
-      <details style="margin-top:10px"><summary class="tiny faint">Raw OCR text</summary><pre class="tiny" style="white-space:pre-wrap">${esc(rawText)}</pre></details>
-    </div>`;
-  wireReviewRows();
-  FULL.querySelector("#ocrSave").addEventListener("click", () => saveReviewItems("ocr"));
+      <div id="ocrReviewInner"></div>`;
+    openReview(parsed, { anchor: "#ocrReviewInner", source: "ocr" });
+  });
 }
 
 /* ============ [U] CATEGORIES + SMS PATTERN editors ================= */
@@ -2237,50 +2726,46 @@ function wireCats(){
   });
 }
 function smsPatternsHTML(){
-  const pats = S.settings.smsPatterns || [];
+  const pats = S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS;
+  const rules = S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES;
   return `
   <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
-  <div class="pagehead"><h1>SMS patterns</h1></div>
-  <div class="card"><p class="tiny faint">Regex tested against each pasted SMS block (case-insensitive, dot matches newline).
-    Capture groups in order: <b>1</b> amount · <b>2</b> merchant · <b>3</b> date. Tweak these to match your bank exactly.</p></div>
-  ${pats.map((p,i) => `<div class="card tight">
-    <input data-pat="${i}" data-f="name" value="${esc(p.name)}" style="width:100%;font-weight:600;background:transparent;border:0;border-bottom:1px solid var(--line);padding:6px 0;margin-bottom:8px"/>
-    <select data-pat="${i}" data-f="dir" style="background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:8px">
-      <option value="expense" ${p.dir==="expense"?"selected":""}>debit / out</option>
-      <option value="income" ${p.dir==="income"?"selected":""}>credit / in</option>
-    </select>
-    <textarea data-pat="${i}" data-f="re" rows="3" style="width:100%;font-family:monospace;font-size:12px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:8px">${esc(p.re)}</textarea>
-    <button class="btn sm danger" data-patdel="${i}" style="margin-top:8px">Delete pattern</button>
-  </div>`).join("")}
-  <button class="btn block" id="patAdd">+ Add pattern</button>
-  <button class="btn primary block" id="patSave" style="margin-top:8px">Save patterns</button>
-  <button class="btn ghost block" id="patReset" style="margin-top:8px">Reset to defaults</button>
+  <div class="pagehead"><h1>SMS formats</h1></div>
+  <div class="card"><p class="tiny faint">Each format is a case-insensitive regex plus a map of which capture group is which field
+    (<b>amount, date, time, merchant, counterparty, fromAcct, toAcct, source</b>). Add a new one to support another bank — no code change.
+    A format with <b>type: transfer_auto</b> is resolved by matching both account last-4s against your registered accounts.</p></div>
+  <textarea id="patJson" rows="16" style="width:100%;font-family:monospace;font-size:11px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:10px">${esc(JSON.stringify(pats, null, 2))}</textarea>
+  <div class="row" style="gap:8px;margin-top:8px">
+    <button class="btn primary block" id="patSave">Save formats</button>
+    <button class="btn block ghost" id="patReset">Reset</button>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3 style="font-size:15px;margin-bottom:8px">Merchant → category rules</h3>
+    <textarea id="ruleJson" rows="10" style="width:100%;font-family:monospace;font-size:11px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:10px">${esc(JSON.stringify(rules, null, 2))}</textarea>
+    <div class="row" style="gap:8px;margin-top:8px">
+      <button class="btn primary block" id="ruleSave">Save rules</button>
+      <button class="btn block ghost" id="ruleReset">Reset</button>
+    </div>
+  </div>
   `;
 }
 function wireSMSPatterns(){
-  const collect = () => {
-    const pats = [];
-    FULL.querySelectorAll("[data-pat]").forEach(el => {
-      const i = +el.dataset.pat; pats[i] = pats[i] || {};
-      pats[i][el.dataset.f] = el.value;
-    });
-    return pats.filter(Boolean);
-  };
-  FULL.querySelector("#patAdd").addEventListener("click", async () => {
-    const pats = collect(); pats.push({ name:"New pattern", dir:"expense", re:"OMR\\s*([0-9.]+).*?at\\s+([A-Za-z0-9 ]+)" });
-    await DB.setMeta("smsPatterns", pats); await refresh(); openFull(smsPatternsHTML()); wireSMSPatterns();
-  });
-  FULL.querySelectorAll("[data-patdel]").forEach(b => b.addEventListener("click", async () => {
-    const pats = collect(); pats.splice(+b.dataset.patdel, 1);
-    await DB.setMeta("smsPatterns", pats); await refresh(); openFull(smsPatternsHTML()); wireSMSPatterns();
-  }));
   FULL.querySelector("#patSave").addEventListener("click", async () => {
-    // validate regexes
-    for (const p of collect()){ try { new RegExp(p.re); } catch { return toast("Invalid regex in: " + p.name); } }
-    await DB.setMeta("smsPatterns", collect()); await refresh(); toast("Saved");
+    let v; try { v = JSON.parse(FULL.querySelector("#patJson").value); } catch { return toast("Invalid JSON"); }
+    if (!Array.isArray(v)) return toast("Expected a JSON array");
+    for (const p of v){ try { new RegExp(p.re); } catch { return toast("Invalid regex in: " + (p.name || p.id)); } }
+    await DB.setMeta("smsParserPatterns", v); await refresh(); toast("Formats saved");
   });
   FULL.querySelector("#patReset").addEventListener("click", async () => {
-    await DB.setMeta("smsPatterns", DEFAULT_SMS_PATTERNS); await refresh(); openFull(smsPatternsHTML()); wireSMSPatterns(); toast("Reset");
+    await DB.setMeta("smsParserPatterns", SmsParser.DEFAULT_PATTERNS); await refresh(); openOverlay("smsPatterns"); toast("Reset");
+  });
+  FULL.querySelector("#ruleSave").addEventListener("click", async () => {
+    let v; try { v = JSON.parse(FULL.querySelector("#ruleJson").value); } catch { return toast("Invalid JSON"); }
+    if (!Array.isArray(v)) return toast("Expected a JSON array");
+    await DB.setMeta("merchantRules", v); await refresh(); toast("Rules saved");
+  });
+  FULL.querySelector("#ruleReset").addEventListener("click", async () => {
+    await DB.setMeta("merchantRules", SmsParser.DEFAULT_MERCHANT_RULES); await refresh(); openOverlay("smsPatterns"); toast("Reset");
   });
 }
 
@@ -2294,10 +2779,106 @@ function openOverlay(name){
     ocr:      [ocrHTML, wireOCR],
     cats:     [catsHTML, wireCats],
     smsPatterns: [smsPatternsHTML, wireSMSPatterns],
+    accounts: [accountsHTML, wireAccounts],
+    allowanceInfo: [allowanceInfoHTML, wireAllowanceInfo],
   };
   const [html, wire] = R[name] || R.settings;
   openFull(html());
   if (wire) wire();
+}
+
+/* ---- accounts editor ---- */
+function accountsHTML(){
+  return `
+  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <div class="pagehead"><h1>Accounts</h1></div>
+  <div class="card"><p class="tiny faint">Register each account with its <b>last 4 digits</b> so pasted SMS can be routed and
+    internal transfers detected. Only the last 4 are ever stored — never a full number.</p></div>
+  ${S.accounts.map(a => `<div class="card tight" data-acct="${a.id}">
+    <div class="field" style="margin-bottom:8px"><label>Label</label><input data-af="label" value="${esc(a.label)}"/></div>
+    <div class="row" style="gap:8px">
+      <div class="field" style="flex:1;margin:0"><label>Last 4</label><input data-af="last4" inputmode="numeric" maxlength="4" value="${esc(a.last4||"")}" placeholder="0017"/></div>
+      <div class="field" style="flex:1;margin:0"><label>Type</label><select data-af="type"><option value="current" ${a.type!=="savings"?"selected":""}>Current</option><option value="savings" ${a.type==="savings"?"selected":""}>Savings</option></select></div>
+    </div>
+    <div class="field" style="margin:8px 0 0"><label>Opening balance (OMR)</label><input data-af="opening" inputmode="decimal" value="${a.openingBalance? (a.openingBalance/1000):""}" placeholder="0"/></div>
+    <div class="row between" style="margin-top:8px">
+      <label class="row tiny" style="gap:6px"><input type="radio" name="primaryAcct" data-af="primary" ${a.isPrimary?"checked":""}/> Primary</label>
+      ${S.accounts.length>1?`<button class="btn sm ghost danger" data-acct-del="${a.id}">Delete</button>`:""}
+    </div>
+    <div class="tiny faint mono" style="margin-top:6px">Balance now: ${U.fmt(F.accountBalance(a.id))}</div>
+  </div>`).join("")}
+  <button class="btn block" id="acctAdd">+ Add account</button>
+  <button class="btn primary block" id="acctSave" style="margin-top:8px">Save accounts</button>
+  `;
+}
+function wireAccounts(){
+  FULL.querySelector("#acctAdd").addEventListener("click", async () => {
+    await DB.put("accounts", { id:U.uid(), label:"Account "+(S.accounts.length+1), last4:"", type:"current", isPrimary:false, openingBalance:0 });
+    await refresh(); openOverlay("accounts");
+  });
+  FULL.querySelectorAll("[data-acct-del]").forEach(b => b.addEventListener("click", async () => {
+    const id = b.dataset.acctDel;
+    if (S.tx.some(t => t.accountId === id || t.fromAccountId === id || t.toAccountId === id)){
+      if (!confirm("This account has transactions. Delete anyway? They will fall back to your primary account.")) return;
+    }
+    await DB.del("accounts", id);
+    let list = await DB.getAll("accounts");
+    if (list.length && !list.some(a => a.isPrimary)){ list[0].isPrimary = true; await DB.put("accounts", list[0]); }
+    await refresh(); openOverlay("accounts");
+  }));
+  FULL.querySelector("#acctSave").addEventListener("click", async () => {
+    for (const card of FULL.querySelectorAll("[data-acct]")){
+      const a = accountById(card.dataset.acct); if (!a) continue;
+      const get = (f) => card.querySelector(`[data-af="${f}"]`);
+      a.label = (get("label").value || "Account").trim().slice(0, 24);
+      a.last4 = (get("last4").value || "").replace(/\D/g, "").slice(-4);
+      a.type = get("type").value === "savings" ? "savings" : "current";
+      a.openingBalance = U.toBaisa(get("opening").value);
+      a.isPrimary = get("primary").checked;
+      await DB.put("accounts", a);
+    }
+    let list = await DB.getAll("accounts");
+    if (!list.some(a => a.isPrimary) && list[0]){ list[0].isPrimary = true; await DB.put("accounts", list[0]); }
+    // exactly one primary
+    const prims = list.filter(a => a.isPrimary);
+    if (prims.length > 1){ for (let i = 1; i < prims.length; i++){ prims[i].isPrimary = false; await DB.put("accounts", prims[i]); } }
+    await refresh(); toast("Accounts saved"); render(); openOverlay("accounts");
+  });
+}
+
+/* ---- daily allowance detail ---- */
+function allowanceInfoHTML(){
+  const a = F.dailyAllowance();
+  const mk = U.monthKey();
+  return `
+  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <div class="pagehead"><h1>Daily allowance</h1></div>
+  <div class="card">
+    <div class="row between"><span class="muted">Allowed today</span><b class="mono">${U.fmt(a.today)}</b></div>
+    <div class="row between"><span class="muted">Spent today</span><b class="mono">${U.fmt(a.spentToday)}</b></div>
+    <div class="row between"><span class="muted">Remaining</span><b class="mono" style="color:${a.remainingToday<0?'var(--neg)':'var(--pos)'}">${U.fmt(a.remainingToday)}</b></div>
+    <div class="divider"></div>
+    <div class="row between tiny"><span class="faint">Normal daily allowance</span><span class="mono">${U.fmt(a.base)}</span></div>
+    <div class="row between tiny"><span class="faint">${a.carryover>=0?"Over so far this month":"Under so far this month"}</span><span class="mono">${U.fmt(Math.abs(a.carryover))}</span></div>
+    <div class="row between tiny"><span class="faint">Correction spread over</span><span class="mono">${a.spreadDays} day${a.spreadDays>1?"s":""}</span></div>
+    <div class="row between tiny"><span class="faint">Days left in ${monthName(mk).split(" ")[0]}</span><span class="mono">${a.daysLeft}</span></div>
+    ${a.message ? `<div class="sched-note" style="margin-top:12px;border-color:${a.impossible?'var(--neg)':a.carryover<0?'var(--pos)':'var(--warn)'}"><div>${esc(a.message)}</div></div>` : ""}
+    ${a.impossible ? `<div class="tiny faint" style="margin-top:8px">Options:</div>
+      <ul class="tiny faint" style="margin:4px 0 0 16px">${a.options.map(o=>`<li>${esc(o)}</li>`).join("")}</ul>` : ""}
+  </div>
+  <div class="card">
+    <div class="field" style="margin:0"><label>Minimum daily allowance floor (OMR) — the allowance is never advised below this</label>
+      <input id="alFloor" inputmode="decimal" value="${a.floor? (a.floor/1000):""}" placeholder="0"/></div>
+    <button class="btn primary block" id="alFloorSave" style="margin-top:10px">Save floor</button>
+  </div>
+  <p class="tiny faint">Overspending is spread across the next 7 days (or the days left, whichever is fewer) rather than dumped on tomorrow. Underspending rolls forward and raises the allowance.</p>
+  `;
+}
+function wireAllowanceInfo(){
+  FULL.querySelector("#alFloorSave").addEventListener("click", async () => {
+    await DB.setMeta("allowanceFloor", U.toBaisa(FULL.querySelector("#alFloor").value));
+    await refresh(); toast("Saved"); openOverlay("allowanceInfo"); render();
+  });
 }
 function themeSelectHTML(id, selected){
   return `<select id="${id}">${THEME_IDS.map(k =>
@@ -2377,6 +2958,12 @@ function settingsHTML(){
   </div>
 
   <div class="card">
+    <div class="row between" style="margin-bottom:8px"><h3 style="font-size:15px">Accounts</h3>
+      <button class="btn sm" data-act="edit-accounts">Manage</button></div>
+    ${S.accounts.map(a => `<div class="row between tiny"><span>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:" · no last4"}${a.isPrimary?" · primary":""}</span><span class="mono">${U.fmt(F.accountBalance(a.id))}</span></div>`).join("")}
+  </div>
+
+  <div class="card">
     <div class="row between"><h3 style="font-size:15px">Tick sound on save / goal chime</h3>
       <button class="btn sm" id="setSound">${s.soundOn?"On":"Off"}</button></div>
   </div>
@@ -2405,7 +2992,8 @@ function settingsHTML(){
     <h3 style="font-size:15px;margin-bottom:10px">Customise</h3>
     <div class="row" style="gap:8px;flex-wrap:wrap">
       <button class="btn sm" data-act="edit-cats">Categories</button>
-      <button class="btn sm" data-act="edit-sms">SMS patterns</button>
+      <button class="btn sm" data-act="edit-sms">SMS formats</button>
+      <button class="btn sm" data-act="edit-accounts">Accounts</button>
       <button class="btn sm" data-act="open-wrapped">Last month's Wrapped</button>
     </div>
   </div>
@@ -3541,13 +4129,20 @@ async function deleteUserTheme(id){
 
 /* ---- [I] ONBOARDING ----------------------------------------------- */
 const ONB = document.getElementById("onb");
-let onbState = { step:0, income:"", salaryDay:"25", savePct:"15", envelopes:["Food","Transport","Boxing/Fitness","Family"] };
+let onbState = { step:0, income:"", salaryDay:"25", savePct:"15", envelopes:["Food","Transport","Boxing/Fitness","Family"],
+  accounts:[{ label:"Main", last4:"" }] };
 const ONB_STEPS = [
-  () => `<h2>Welcome to Rial 👋</h2><p class="lead">A private money tracker. Everything stays on this iPhone — no account, no server. Let's set it up in 4 quick steps.</p>
+  () => `<h2>Welcome to Rial 👋</h2><p class="lead">A private money tracker. Everything stays on this iPhone — no account, no server. Let's set it up in a few quick steps.</p>
     <div class="pill">Currency: OMR (Omani Rial)</div>`,
   () => `<h2>Your income</h2><p class="lead">Roughly how much do you get each month? Used for "Safe to spend".</p>
     <div class="field"><label>Monthly income (OMR)</label><input id="onbIncome" inputmode="decimal" value="${esc(onbState.income)}" placeholder="e.g. 900" /></div>
     <div class="field"><label>Which day are you paid?</label><input id="onbSalaryDay" inputmode="numeric" value="${esc(onbState.salaryDay)}" /></div>`,
+  () => `<h2>Your accounts</h2><p class="lead">Add each bank account with its <b>last 4 digits</b> so pasted SMS route correctly. Only the last 4 is ever stored.</p>
+    ${onbState.accounts.map((a,i) => `<div class="row" style="gap:8px;margin-bottom:8px">
+      <input data-onb-acc="${i}" data-f="label" value="${esc(a.label)}" placeholder="Label" style="flex:1;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:10px;padding:10px"/>
+      <input data-onb-acc="${i}" data-f="last4" inputmode="numeric" maxlength="4" value="${esc(a.last4)}" placeholder="0017" style="width:80px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:10px;padding:10px"/>
+    </div>`).join("")}
+    <button class="btn sm ghost block" id="onbAccAdd">+ Add another account</button>`,
   () => `<h2>Savings target</h2><p class="lead">What share of income do you want to keep? It's held back from Safe-to-Spend.</p>
     <div class="field"><label>Savings target %</label><input id="onbSavePct" inputmode="numeric" value="${esc(onbState.savePct)}" /></div>`,
   () => `<h2>First envelopes</h2><p class="lead">Pick a few spending buckets. You can change these anytime.</p>
@@ -3570,10 +4165,16 @@ function renderOnb(){
     onbState.envelopes = onbState.envelopes.includes(n) ? onbState.envelopes.filter(x=>x!==n) : [...onbState.envelopes, n];
     b.setAttribute("aria-pressed", String(onbState.envelopes.includes(n)));
   }));
+  ONB.querySelectorAll("[data-onb-acc]").forEach(el => el.addEventListener("input", () => {
+    const a = onbState.accounts[+el.dataset.onbAcc];
+    if (a) a[el.dataset.f] = el.dataset.f === "last4" ? el.value.replace(/\D/g, "").slice(-4) : el.value;
+  }));
+  const accAdd = ONB.querySelector("#onbAccAdd");
+  if (accAdd) accAdd.addEventListener("click", () => { onbState.accounts.push({ label:"Savings", last4:"" }); renderOnb(); });
   const g = (id) => { const el = document.getElementById(id); return el ? el.value : ""; };
   ONB.querySelector("#onbNext").addEventListener("click", async () => {
     if (onbState.step === 1){ onbState.income = g("onbIncome"); onbState.salaryDay = g("onbSalaryDay"); }
-    if (onbState.step === 2){ onbState.savePct = g("onbSavePct"); }
+    if (onbState.step === 3){ onbState.savePct = g("onbSavePct"); }
     if (onbState.step < ONB_STEPS.length - 1){ onbState.step++; renderOnb(); }
     else await finishOnb();
   });
@@ -3585,6 +4186,18 @@ async function finishOnb(){
   if (onbState.salaryDay) await DB.setMeta("salaryDay", U.clamp(parseInt(onbState.salaryDay)||25,1,28));
   if (onbState.savePct) await DB.setMeta("savingsTargetPct", U.clamp(parseInt(onbState.savePct)||0,0,80));
   if (onbState.envelopes?.length) await DB.setMeta("preferredEnvelopes", onbState.envelopes);
+  // accounts
+  const accs = (onbState.accounts || []).filter(a => (a.label || "").trim());
+  if (accs.length){
+    for (const a of await DB.getAll("accounts")) await DB.del("accounts", a.id);
+    let i = 0;
+    for (const a of accs){
+      await DB.put("accounts", { id:U.uid(), label:a.label.trim().slice(0,24),
+        last4:(a.last4||"").replace(/\D/g,"").slice(-4), type: i>0?"savings":"current",
+        isPrimary: i===0, openingBalance:0 });
+      i++;
+    }
+  }
   await DB.setMeta("onboarded", true);
   await refresh();
   ONB.hidden = true; ONB.style.display = "none"; ONB.innerHTML = "";

@@ -6,7 +6,8 @@
   "scripts": {
     "icons": "node build-icons.js",
     "themes": "node build-themes.js",
-    "test": "node build-themes.js --check && node test.mjs && node test-dom.mjs && node test-browser.mjs"
+    "parser": "node build-parser.js",
+    "test": "node build-themes.js --check && node build-parser.js --check && node test-parser.mjs && node test.mjs && node test-dom.mjs && node test-browser.mjs"
   },
   "license": "ISC",
   "type": "commonjs",
