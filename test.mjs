@@ -54,7 +54,7 @@ const mkEl = () => ({
 });
 let _htmlTheme = "midnight";
 const document = {
-  getElementById: (id) => (id === "wrapWrap" ? null : id === "onb" ? { ...mkEl(), hidden: true } : mkEl()),
+  getElementById: (id) => ((id === "wrapWrap" || id === "questComplete") ? null : id === "onb" ? { ...mkEl(), hidden: true } : mkEl()),
   querySelector: () => mkEl(), querySelectorAll: () => [],
   createElement: () => mkEl(), addEventListener() {},
   body: mkEl(), head: mkEl(),
@@ -96,6 +96,7 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   QR, validateSharedTheme, encodeThemeLink, decodeThemeLink, serializeThemeForShare, buildShareLink,
   isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
   b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
+  gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, themeMusic,
   get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
@@ -361,6 +362,79 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   ok("index.html has :root[data-theme=\"monarch\"] palette", /:root\[data-theme="monarch"\]\{[^}]*--bg:\s*#0a0e1a/.test(html));
   ok("index.html has monarch decorative CSS", /\[data-theme="monarch"\] \.card\{/.test(html));
   ok("index.html has THEMES-JS generated block", /THEMES-JS:START[\s\S]*const THEMES = \{[\s\S]*"monarch"[\s\S]*THEMES-JS:END/.test(html));
+}
+
+/* ---- 7g0a. theme-declared music + gamification module ---- */
+{
+  const m = T.THEMES.monarch;
+  ok("monarch declares music", m.music && typeof m.music === "object");
+  eq("monarch music.src", m.music.src, "assets/theme-music.mp3");
+  eq("monarch music.startAt", m.music.startAt, 33);
+  eq("monarch music.loop", m.music.loop, true);
+  eq("monarch opts into the gamification module", m.module, "gamification");
+  eq("midnight has no music", T.THEMES.midnight.music, null);
+  eq("midnight has no module", T.THEMES.midnight.module, null);
+  ok("generated block carries music src + module", /assets\/theme-music\.mp3/.test(html) && /"module":\s*"gamification"/.test(html));
+
+  // gameActive() follows the active theme's registry entry
+  T.applyTheme("monarch");
+  ok("gameActive() true under Monarch", T.gameActive());
+  T.applyTheme("midnight");
+  ok("gameActive() false under Midnight", !T.gameActive());
+  T.applyTheme("monarch");
+
+  // XP curve: L2=100, L3=300, L4=600, L5=1000
+  eq("xpForLevel(2)", T.xpForLevel(2), 100);
+  eq("xpForLevel(3)", T.xpForLevel(3), 300);
+  eq("xpForLevel(5)", T.xpForLevel(5), 1000);
+  eq("levelFor(0).level", T.levelFor(0).level, 1);
+  eq("levelFor(99).level", T.levelFor(99).level, 1);
+  eq("levelFor(100).level", T.levelFor(100).level, 2);
+  eq("levelFor(350).level", T.levelFor(350).level, 3);
+  eq("levelFor(150) progress into L2", T.levelFor(150).into, 50);
+  ok("levelFor(150) pct is 0-100", T.levelFor(150).pct >= 0 && T.levelFor(150).pct <= 100);
+
+  // daily quests: deterministic per date, always 3, all from the pool
+  const q1 = T.todaysQuests("2026-08-28"), q2 = T.todaysQuests("2026-08-28");
+  eq("todaysQuests count", q1.length, 3);
+  eq("todaysQuests deterministic per day", q1.map((q) => q.id).join(","), q2.map((q) => q.id).join(","));
+  const other = T.todaysQuests("2026-09-15").map((q) => q.id).join(",");
+  ok("todaysQuests varies across days", other !== q1.map((q) => q.id).join(",") || T.QUEST_POOL.length <= 3);
+  ok("every quest id is from the pool", q1.every((q) => T.QUEST_POOL.some((p) => p.id === q.id)));
+  ok("every quest awards positive XP", q1.every((q) => q.xp > 0));
+
+  // music controller: never touches the network before a tap
+  eq("themeMusic starts un-started", T.themeMusic.started, false);
+  eq("themeMusic.spec() resolves for Monarch", T.themeMusic.spec().src, "assets/theme-music.mp3");
+}
+
+/* ---- 7g0a2. music / module never survive a share link ---- */
+{
+  const withMusic = { v: 1, id: "x", name: "X", scheme: "dark", tokens: { bg: "#111" }, music: { src: "assets/x.mp3" } };
+  ok("shared theme with a music field is rejected", !T.validateSharedTheme(withMusic).ok);
+  const withModule = { v: 1, id: "x", name: "X", scheme: "dark", tokens: { bg: "#111" }, module: "gamification" };
+  ok("shared theme with a module field is rejected", !T.validateSharedTheme(withModule).ok);
+  const p = T.serializeThemeForShare("monarch");
+  ok("serialized Monarch drops music", !("music" in p));
+  ok("serialized Monarch drops module", !("module" in p));
+}
+
+/* ---- 7g0a3. build-themes.js rejects malformed music / module ---- */
+{
+  const themesDir = path.join(__dir, "themes");
+  const badPath = path.join(themesDir, "_zbad.theme.json");
+  // theme validation runs before the --check sync comparison, so a bad file always dies here
+  const buildRejects = (obj) => {
+    fs.writeFileSync(badPath, JSON.stringify({ id: "_zbad", name: "Bad", scheme: "dark", ...obj }));
+    try { execSync(`node "${path.join(__dir, "build-themes.js")}" --check`, { stdio: "pipe" }); return false; }
+    catch { return true; }
+    finally { fs.unlinkSync(badPath); }
+  };
+  ok("rejects music.src with a traversal", buildRejects({ music: { src: "../secret.mp3" } }));
+  ok("rejects music.src with a bad extension", buildRejects({ music: { src: "assets/x.txt" } }));
+  ok("rejects negative music.startAt", buildRejects({ music: { src: "a.mp3", startAt: -5 } }));
+  ok("rejects music.startAt that is not a number", buildRejects({ music: { src: "a.mp3", startAt: "33" } }));
+  ok("rejects an unknown module", buildRejects({ module: "cheat-codes" }));
 }
 
 /* ---- 7g0b. index.html is in sync with themes/*.theme.json ---- */

@@ -103,11 +103,37 @@ const themes = files.map((f) => {
   const fontHeading = font.heading || (font.family ? `"${font.family}", "SF Pro Display", system-ui, sans-serif` : null);
   const fontImports = (font.imports && font.imports.length) ? font.imports : (font.family ? [googleFontUrl(font.family)] : []);
 
+  /* optional: bundled theme music. Never travels in share links (unknown key -> rejected). */
+  let music = null;
+  if (t.music != null){
+    const m = t.music;
+    if (typeof m !== "object" || Array.isArray(m)) die(`${f}: "music" must be an object`);
+    if (typeof m.src !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_./-]*\.(mp3|m4a|ogg|webm)$/.test(m.src) || m.src.includes(".."))
+      die(`${f}: music.src must be a safe same-origin relative path ending .mp3/.m4a/.ogg/.webm (no "..")`);
+    let startAt = 0;
+    if (m.startAt != null){
+      if (typeof m.startAt !== "number" || !Number.isFinite(m.startAt) || m.startAt < 0)
+        die(`${f}: music.startAt must be a number >= 0`);
+      startAt = m.startAt;
+    }
+    if (m.loop != null && typeof m.loop !== "boolean") die(`${f}: music.loop must be a boolean`);
+    music = { src: m.src, startAt, loop: m.loop !== false };
+  }
+
+  /* optional: opt-in feature module. Never travels in share links. */
+  let mod = null;
+  if (t.module != null){
+    if (t.module !== "gamification") die(`${f}: "module" must be "gamification" (the only module)`);
+    mod = t.module;
+  }
+
   return {
     id, name: t.name, scheme: t.scheme, tokens,
     fontFamily: font.family || null,
     fontHeading,
     fontImports,
+    music,
+    module: mod,
     decorativeCss: typeof t.decorativeCss === "string" ? t.decorativeCss : "",
     contrast: { text: cText && +cText.toFixed(2), dim: cDim && +cDim.toFixed(2) },
   };
@@ -143,6 +169,8 @@ for (const t of ordered) registry[t.id] = {
   tokens: t.tokens,                 // full resolved 16-token palette (for link sharing)
   fontFamily: t.fontFamily,
   fontImports: t.fontImports,
+  music: t.music,                   // bundled theme music or null (never shared)
+  module: t.module,                 // opt-in feature module or null (never shared)
 };
 const js =
   `/* generated from themes/*.theme.json by build-themes.js — do not edit here */\n` +

@@ -43,6 +43,17 @@ if (!win.btoa) win.btoa = (s) => Buffer.from(s, "binary").toString("base64");
 if (!win.atob) win.atob = (s) => Buffer.from(s, "base64").toString("binary");
 if (!win.TextEncoder) win.TextEncoder = TextEncoder;
 if (!win.TextDecoder) win.TextDecoder = TextDecoder;
+// jsdom has no media playback engine — stub it so the theme-music controller can run
+{
+  const M = win.HTMLMediaElement && win.HTMLMediaElement.prototype;
+  if (M) {
+    M.play = function () { this._paused = false; return Promise.resolve(); };
+    M.pause = function () { this._paused = true; };
+    M.load = function () {};
+    Object.defineProperty(M, "paused", { get() { return this._paused !== false; }, configurable: true });
+    Object.defineProperty(M, "duration", { get() { return 200; }, configurable: true });
+  }
+}
 
 const $ = (s) => doc.querySelector(s);
 const $$ = (s) => [...doc.querySelectorAll(s)];
@@ -435,6 +446,56 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   ok("deleting the active user theme falls back to a built-in", ["midnight", "paper", "desert", "depth"].includes(doc.documentElement.getAttribute("data-theme")));
   ok("deleted theme's chip is gone", ![...$$("[data-theme-set]")].some(b => b.dataset.themeSet === "monarch-shared"));
   win.eval("closeFull()"); await sleep(200);
+
+  // --- Monarch: gamification module + theme music (both hide under other themes) ---
+  win.eval('applyThemeSmooth("monarch")'); await sleep(340);
+  win.eval('go("home")'); await sleep(50);
+  ok("Monarch: gamification panel renders on Home", !!$("#view .game-panel"));
+  ok("Monarch: panel shows 3 daily quests", $$("#view .game-panel .quest").length === 3);
+  ok("Monarch: panel shows an XP bar", !!$("#view .game-panel .xpbar > i"));
+  ok("Monarch: Home header shows the music toggle", !!$("#musicToggle"));
+  {
+    const audio = $("#themeAudio");
+    ok("themeAudio element exists", !!audio);
+    ok("themeAudio lives outside #view (survives tab nav)", audio && !$("#view").contains(audio));
+    ok("themeAudio has no src before a tap (no network hit)", audio && !audio.getAttribute("src"));
+  }
+  // volume slider in Settings
+  win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings open");
+  ok("Settings: Monarch music volume slider present", !!$("#setMusicVol"));
+  setVal($("#setMusicVol"), "0.8");
+  await sleep(30);
+  ok("music volume persists to meta", parseFloat(win.localStorage.getItem("rial:meta:musicVolume")) === 0.8);
+  win.eval("closeFull()"); await sleep(200);
+
+  // tap-to-play wires up the source (jsdom media is stubbed)
+  win.eval('go("home")'); await sleep(50);
+  click($("#musicToggle"));
+  await sleep(50);
+  ok("tapping the toggle assigns the audio source", $("#themeAudio").getAttribute("src") === "assets/theme-music.mp3");
+
+  // funding a goal triggers the full-screen QUEST COMPLETE
+  win.eval(`(async () => {
+    const g = S.goals[0]; if (g){ g.saved = g.target; await DB.put("goals", g); }
+    S.settings.game = { xp: 0, quests: { ymd:"", done:[] } };
+    await checkGoalChimes();
+  })()`);
+  await until(() => $("#questComplete") && !$("#questComplete").hidden, "QUEST COMPLETE overlay shown");
+  ok("QUEST COMPLETE overlay appears when a goal is funded", $("#questComplete") && !$("#questComplete").hidden);
+  ok("QUEST COMPLETE names the goal + XP", /QUEST COMPLETE/.test($("#questComplete").textContent) && /XP/.test($("#questComplete").textContent));
+  ok("funding a goal awards XP", (JSON.parse(win.localStorage.getItem("rial:meta:game")) || {}).xp === 100);
+  click($("#questComplete"));
+  await until(() => $("#questComplete").hidden, "overlay dismissed on tap");
+  ok("QUEST COMPLETE dismisses on tap", $("#questComplete").hidden);
+
+  // switching away from Monarch removes all of it + stops the music
+  win.eval('applyThemeSmooth("midnight")'); await sleep(340);
+  win.eval('go("home")'); await sleep(50);
+  ok("non-Monarch: gamification panel gone", !$("#view .game-panel"));
+  ok("non-Monarch: music toggle gone", !$("#musicToggle"));
+  ok("non-Monarch: audio source cleared", !$("#themeAudio").getAttribute("src"));
+  ok("gameActive() is false off Monarch", win.eval("gameActive()") === false);
+  win.eval('applyThemeSmooth("midnight")'); await sleep(100);
 
   // --- malicious links leave the app completely untouched ---
   win.eval('applyThemeSmooth("desert")'); await sleep(320);

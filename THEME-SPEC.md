@@ -37,8 +37,30 @@ picker, and the tests all read the generated registry.
   },
   "decorativeCss": "..."        // OPTIONAL. raw CSS appended to the stylesheet. MUST self-scope every rule
                                 //   with [data-theme="<id>"]. Prefix @keyframes names with <id>- .
+  "music": {                    // OPTIONAL. a soundtrack that plays only while this theme is active.
+    "src": "assets/theme-music.mp3",  // REQUIRED. same-origin relative path, no "..",
+                                //   matches [A-Za-z0-9_./-]+ and ends .mp3 / .m4a / .ogg / .webm.
+    "startAt": 33,              // OPTIONAL number >= 0 (default 0). where playback begins AND the
+                                //   point the track seamlessly loops back to.
+    "loop": true                // OPTIONAL boolean (default true).
+  },
+  "module": "gamification"      // OPTIONAL. opt into a bundled feature module. Enum — currently the
+                                //   only value is "gamification" (daily quests, XP/levels, streak,
+                                //   a full-screen "QUEST COMPLETE" when a savings goal is funded).
+                                //   The whole module is inert unless the active theme declares it.
 }
 ```
+
+### `music` runtime rules
+
+* **Tap-to-play only** — never autoplay, never auto-resume after a reload. A ♪ control
+  appears in the Home header (and in Settings) while the theme is active.
+* The `<audio>` element lives outside the screen container, so playback **survives tab
+  navigation**. It stops when you switch away from the theme.
+* **Volume** has a slider in Settings; the level is remembered (`musicVolume` meta).
+* If the file 404s or fails to decode, the control **hides itself** — the theme is still
+  fully usable. The file is fetched only on the first tap, so a missing file costs nothing.
+* `src` is never fetched cross-origin; the service worker caches it after first play.
 
 ### Token contract (defined by `base.theme.json`, which is **locked**)
 
@@ -110,7 +132,9 @@ deviation rejects the whole link and leaves the app on its current theme.
 | `font.family` | ✅ (optional) | plain name only (`[A-Za-z0-9][A-Za-z0-9 -]{0,39}`); loaded from Google Fonts **by name** — the sender's `font.imports` URLs are **never** used |
 | `font.heading`, `font.imports` | ❌ stripped | recipient's stack/URL is rebuilt locally from `font.family` |
 | `decorativeCss` | ❌ **stripped** | scanlines, System-window borders, `::before`, `@keyframes`, extra glows — none of it travels |
-| any audio / `music` / `sound` field | ❌ **rejected** | an unknown key; the import preview states "Audio is not included in shared themes." |
+| `music` | ❌ **rejected** | an unknown key to the v1 share schema; the import preview states "Audio is not included in shared themes." |
+| `module` (`"gamification"`) | ❌ **rejected** | an unknown key; feature modules are built-in-only and never travel |
+| any audio / `sound` field | ❌ **rejected** | an unknown key |
 | any other key | ❌ **rejected** | unknown top-level or token keys fail the whole link |
 
 ### Value rules (reject, never sanitise)

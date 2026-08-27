@@ -27,6 +27,7 @@ const MIME = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
+  ".mp3": "audio/mpeg",
 };
 
 let pass = 0, fail = 0;
@@ -214,6 +215,28 @@ const failedRequests = [];
       ok("monarch: headings resolve to the Orbitron stack", m.headingUsesOrbitron, JSON.stringify(m));
       ok("monarch: cards get the System-window corner notch (clip-path)", m.cardHasNotch, JSON.stringify(m));
       ok("monarch: sharp radii from the theme file (--r-lg 5px)", m.rLg === "5px", m.rLg);
+
+      // gamification module + theme music (only live under a theme that declares them)
+      await page.evaluate(() => go("home"));
+      await new Promise((r) => setTimeout(r, 1100));            // let the count-up settle
+      const gm = await page.evaluate(() => {
+        const num = document.querySelector('#view .hero .big [data-count]');
+        const target = num ? parseFloat(num.getAttribute("data-count")) : NaN;
+        return {
+          panel: !!document.querySelector("#view .game-panel"),
+          quests: document.querySelectorAll("#view .game-panel .quest").length,
+          xpbar: !!document.querySelector("#view .game-panel .xpbar > i"),
+          musicBtn: !!document.getElementById("musicToggle"),
+          audioNoSrc: (() => { const a = document.getElementById("themeAudio"); return !!a && !a.getAttribute("src"); })(),
+          countSettled: num ? num.textContent === U.fmt(Math.round(target)) : false,
+        };
+      });
+      ok("monarch: gamification panel on the dashboard", gm.panel, JSON.stringify(gm));
+      ok("monarch: three daily quests", gm.quests === 3, JSON.stringify(gm));
+      ok("monarch: XP bar rendered", gm.xpbar, JSON.stringify(gm));
+      ok("monarch: tap-to-play music toggle in the header", gm.musicBtn, JSON.stringify(gm));
+      ok("monarch: <audio> carries no src until tapped (no network hit)", gm.audioNoSrc, JSON.stringify(gm));
+      ok("monarch: count-up lands on the real value", gm.countSettled, JSON.stringify(gm));
     }
     await page.screenshot({ path: path.join(__dir, `screenshot-theme-${id}.png`) });
   }

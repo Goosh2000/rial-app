@@ -3,3 +3,8 @@ node_modules/
 screenshot-*.png
 *.log
 .DS_Store
+
+# theme music is user-supplied and may be copyrighted — never commit it.
+# The Monarch theme declares assets/theme-music.mp3; it ships absent and the
+# in-app control hides itself when the file is missing.
+assets/theme-music.mp3
