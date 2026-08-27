@@ -3,6 +3,8 @@
 Private, offline-first personal finance PWA for one person. OMR currency, no backend,
 no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON backup/restore.
 
+**Live:** https://goosh2000.github.io/rial-app/ · **Repo:** https://github.com/Goosh2000/rial-app
+
 ## Files
 | file | purpose |
 |---|---|
@@ -12,6 +14,7 @@ no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON ba
 | `icon-*.png` | app icons (generated) |
 | `build-icons.js` | regenerates icons — pure Node, no deps: `node build-icons.js` |
 | `test*.mjs` | test suites (see **Test** below) |
+| `verify-live.mjs` | loads the deployed URL in headless Chrome and checks it renders clean |
 | `deploy.ps1` | one-shot GitHub Pages deploy (run after `gh auth login`) |
 | `SETUP.md` | deploy + install on iPhone, clearing a stale service worker |
 | `package.json` / `node_modules/` | **dev tooling only** — the app ships without them |
