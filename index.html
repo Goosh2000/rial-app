@@ -252,6 +252,18 @@ details summary{ cursor:pointer; }
 details pre{ background:var(--bg-elev-2); padding:10px; border-radius:8px; overflow-x:auto; max-height:200px; }
 textarea{ font-family:var(--font); resize:vertical; }
 img{ max-width:100%; }
+
+/* theme-schedule crossfade overlay (transform/opacity only) */
+#themeFade{
+  position:fixed; inset:0; z-index:90; pointer-events:none;
+  opacity:0; background:#0b0d10; will-change:opacity;
+}
+/* schedule editor bits */
+.sched-win{ display:grid; grid-template-columns:1fr 1fr auto; gap:6px; align-items:center; margin:10px 0; }
+.sched-win > select{ grid-column:1 / -1; }
+.sched-win input[type="time"], .sched-win select{ min-height:38px; padding:6px 8px; background:var(--bg-elev-2); border:1px solid var(--line); border-radius:8px; width:100%; }
+.sched-win button{ min-height:38px; }
+.sched-note{ display:flex; gap:8px; align-items:center; background:var(--bg-elev-2); border:1px solid var(--warn); border-radius:var(--r-md); padding:10px 12px; margin-top:10px; font-size:13px; }
 </style>
 </head>
 <body>
@@ -271,6 +283,7 @@ img{ max-width:100%; }
 <div class="fullmodal" id="full"></div>
 <div id="onb" hidden></div>
 <div class="toast" id="toast"></div>
+<div id="themeFade" aria-hidden="true"></div>
 
 <script>
 /* ============================================================================
@@ -436,7 +449,8 @@ const DB = (() => {
       const out = { app:"rial", version:VERSION, exportedAt:new Date().toISOString(), meta:{}, data:{} };
       for (const s of STORES) out.data[s] = await api.getAll(s);
       const keys = ["settings","theme","csvMapping","smsPatterns","lastBackup","onboarded",
-                    "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","icsExportedAt"];
+                    "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","icsExportedAt",
+                    "themeSchedule","themeManual"];
       for (const k of keys) out.meta[k] = await api.meta(k);
       return out;
     },
@@ -515,6 +529,8 @@ async function refresh(){
     icsSignature: await DB.meta("icsSignature", null),
     goalsDone: await DB.meta("goalsDone", []),
     preferredEnvelopes: await DB.meta("preferredEnvelopes", null),
+    themeSchedule: await DB.meta("themeSchedule", { mode:"off", base:"midnight", windows:[], systemLight:"paper", systemDark:"midnight" }),
+    themeManual: await DB.meta("themeManual", null),
   };
 }
 const catByName = (n) => S.cats.find(c => c.name === n);
@@ -686,10 +702,12 @@ function openSheet(html){
   SHEET.innerHTML = `<div class="grabber"></div>${html}`;
   SHEET.classList.add("open"); SCRIM.classList.add("open");
 }
-function closeSheet(){ SHEET.classList.remove("open"); SCRIM.classList.remove("open"); }
+function closeSheet(){ SHEET.classList.remove("open"); SCRIM.classList.remove("open"); afterInteraction(); }
 SCRIM.addEventListener("click", () => { closeSheet(); closeFull(); });
 function openFull(html){ FULL.innerHTML = html; FULL.classList.add("open"); }
-function closeFull(){ FULL.classList.remove("open"); setTimeout(()=>FULL.innerHTML="", 300); }
+function closeFull(){ FULL.classList.remove("open"); setTimeout(()=>{ FULL.innerHTML=""; afterInteraction(); }, 300); }
+/* run a deferred scheduled theme switch once the user is idle again */
+function afterInteraction(){ try { if (typeof flushPendingThemeSwitch === "function") flushPendingThemeSwitch(); } catch(_){} }
 
 /* ---- [F] SCREENS ------------------------------------------------- */
 function sparkSVG(series, key = "spent"){
@@ -2193,9 +2211,51 @@ function openOverlay(name){
   openFull(html());
   if (wire) wire();
 }
+function themeSelectHTML(id, selected){
+  return `<select id="${id}">${THEME_IDS.map(k =>
+    `<option value="${k}" ${selected===k?"selected":""}>${themeName(k)}</option>`).join("")}</select>`;
+}
+function scheduleHTML(){
+  const sch = { ...DEFAULT_SCHEDULE, ...(S.settings.themeSchedule || {}) };
+  const man = S.settings.themeManual;
+  const modes = [["off","Off"],["system","System"],["windows","Windows"]];
+  let body = "";
+  if (sch.mode === "system"){
+    body = `<div class="field" style="margin-bottom:8px"><label>Light appearance</label>${themeSelectHTML("schedSysLight", validTheme(sch.systemLight))}</div>
+      <div class="field" style="margin:0"><label>Dark appearance</label>${themeSelectHTML("schedSysDark", validTheme(sch.systemDark))}</div>
+      <p class="tiny faint" style="margin-top:8px">Follows your iPhone's Light/Dark setting.</p>`;
+  } else if (sch.mode === "windows"){
+    body = `<div class="field" style="margin-bottom:8px"><label>Otherwise use</label>${themeSelectHTML("schedBase", validTheme(sch.base))}</div>
+      ${(sch.windows||[]).map((w,i) => `<div class="sched-win">
+        <input type="time" data-win-idx="${i}" data-win-field="start" value="${esc(w.start||"18:00")}"/>
+        <input type="time" data-win-idx="${i}" data-win-field="end" value="${esc(w.end||"06:00")}"/>
+        <button class="btn sm ghost danger" data-win-del="${i}" aria-label="Remove window">✕</button>
+        <select data-win-idx="${i}" data-win-field="theme">${THEME_IDS.map(k=>`<option value="${k}" ${w.theme===k?"selected":""}>${themeName(k)}</option>`).join("")}</select>
+      </div>`).join("")}
+      <button class="btn sm block ghost" id="schedAddWin" style="margin-top:6px">+ Add window</button>
+      <p class="tiny faint" style="margin-top:8px">Windows may cross midnight (e.g. 18:00 → 06:00). Device time (Asia/Muscat).</p>`;
+  } else {
+    body = `<p class="tiny faint" style="margin:0">The theme only changes when you pick one.</p>`;
+  }
+  let note = "";
+  if (man && sch.mode !== "off"){
+    const sched = scheduledThemeAt();
+    const when = man.until ? new Date(man.until).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}) : null;
+    note = `<div class="sched-note">
+      <div style="flex:1">Manual: <b>${themeName(man.theme)}</b>${sched && sched!==man.theme ? ` — ${themeName(sched)} resumes${when?` at ${when}`:" when system flips"}` : ""}</div>
+      <button class="btn sm" id="schedResume">Resume schedule</button></div>`;
+  }
+  return `
+    <div class="divider"></div>
+    <div class="row between" style="margin-bottom:8px"><h4 style="font-size:13px;color:var(--text-dim);letter-spacing:.02em">SCHEDULE</h4></div>
+    <div class="seg" style="margin-bottom:10px">
+      ${modes.map(([k,l]) => `<button data-sched-mode="${k}" aria-pressed="${sch.mode===k}">${l}</button>`).join("")}
+    </div>
+    ${body}
+    ${note}`;
+}
 function settingsHTML(){
   const s = S.settings;
-  const themes = [["midnight","Midnight"],["paper","Paper"],["desert","Desert"],["depth","Depth"]];
   return `
   <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
   <div class="pagehead"><h1>Settings</h1></div>
@@ -2203,8 +2263,9 @@ function settingsHTML(){
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">Theme</h3>
     <div class="scroll-x">
-      ${themes.map(([k,label]) => `<button class="chip" data-theme-set="${k}" aria-pressed="${s.theme===k}">${label}</button>`).join("")}
+      ${THEME_IDS.map(k => `<button class="chip" data-theme-set="${k}" aria-pressed="${s.theme===k}">${themeName(k)}</button>`).join("")}
     </div>
+    ${scheduleHTML()}
   </div>
 
   <div class="card">
@@ -2291,7 +2352,21 @@ async function resetApp(){
 }
 FULL.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-theme-set]");
-  if (t){ await setTheme(t.dataset.themeSet); openFull(settingsHTML()); return; }
+  if (t){ await pickThemeManually(t.dataset.themeSet); openFull(settingsHTML()); return; }
+  const sm = e.target.closest("[data-sched-mode]");
+  if (sm){ await saveSchedule({ mode: sm.dataset.schedMode }); openFull(settingsHTML()); return; }
+  if (e.target.id === "schedAddWin"){
+    const w = { ...DEFAULT_SCHEDULE, ...(S.settings.themeSchedule || {}) }.windows.slice();
+    w.push({ start: "18:00", end: "06:00", theme: "midnight" });
+    await saveSchedule({ windows: w }); openFull(settingsHTML()); return;
+  }
+  const wd = e.target.closest("[data-win-del]");
+  if (wd){
+    const w = (S.settings.themeSchedule.windows || []).slice();
+    w.splice(+wd.dataset.winDel, 1);
+    await saveSchedule({ windows: w }); openFull(settingsHTML()); return;
+  }
+  if (e.target.id === "schedResume"){ await resumeSchedule(); openFull(settingsHTML()); return; }
   const act = e.target.closest("[data-act]");
   if (act){ handleAct(act.dataset.act, act.dataset); return; }
   if (e.target.id === "setSaveMoney"){
@@ -2311,9 +2386,21 @@ FULL.addEventListener("change", async (e) => {
     try {
       const txt = await e.target.files[0].text();
       await DB.importAll(JSON.parse(txt));
-      await refresh(); applyThemeFromStore();
+      await refresh(); resolveThemeOnBoot(); startScheduler();
       toast("Backup restored"); closeFull(); render();
     } catch(err){ toast("Import failed: " + err.message); }
+    return;
+  }
+  // schedule editors
+  if (e.target.id === "schedSysLight"){ await saveSchedule({ systemLight: e.target.value }); return; }
+  if (e.target.id === "schedSysDark"){ await saveSchedule({ systemDark: e.target.value }); return; }
+  if (e.target.id === "schedBase"){ await saveSchedule({ base: e.target.value }); return; }
+  const wf = e.target.closest("[data-win-idx]");
+  if (wf){
+    const i = +wf.dataset.winIdx, f = wf.dataset.winField;
+    const w = (S.settings.themeSchedule.windows || []).map(x => ({ ...x }));
+    if (w[i]){ w[i][f] = e.target.value; await saveSchedule({ windows: w }); }
+    if (f === "theme") openFull(settingsHTML());   // re-render only for the select swatch
   }
 });
 function val(id){ const el = document.getElementById(id); return el ? el.value : ""; }
@@ -2331,14 +2418,191 @@ async function doExport(){
   toast("Backup exported");
 }
 
-/* theme */
-async function setTheme(name){ await DB.setMeta("theme", name); S.settings.theme = name; applyTheme(name); }
+/* ============ THEME ENGINE + AUTO-SCHEDULER ======================== *
+ * THEME_META is the single registry: to add a theme, add its CSS
+ * :root[data-theme="id"] palette block AND one line here.
+ * ----------------------------------------------------------------- */
+const THEME_META = {
+  midnight: { name: "Midnight", bg: "#0b0d10", scheme: "dark"  },
+  paper:    { name: "Paper",    bg: "#f6f7f9", scheme: "light" },
+  desert:   { name: "Desert",   bg: "#1c1610", scheme: "dark"  },
+  depth:    { name: "Depth",    bg: "#070f1c", scheme: "dark"  },
+};
+const THEME_IDS = Object.keys(THEME_META);
+const themeName = (id) => (THEME_META[id] || {}).name || id || "Midnight";
+const validTheme = (id) => (THEME_META[id] ? id : "midnight");
+const DEFAULT_SCHEDULE = { mode: "off", base: "midnight", windows: [], systemLight: "paper", systemDark: "midnight" };
+
+function currentThemeId(){ return document.documentElement.getAttribute("data-theme") || "midnight"; }
+
 function applyTheme(name){
+  name = validTheme(name);
   document.documentElement.setAttribute("data-theme", name);
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
-  document.getElementById("metaTheme").setAttribute("content", bg || "#0b0d10");
+  const mt = document.getElementById("metaTheme");
+  if (mt) mt.setAttribute("content", bg || (THEME_META[name] || {}).bg || "#0b0d10");
 }
 async function applyThemeFromStore(){ applyTheme(await DB.meta("theme", "midnight")); }
+
+/* --- crossfade (opacity only) --- */
+let _fadeT1, _fadeT2;
+function applyThemeSmooth(id){
+  id = validTheme(id);
+  const ov = document.getElementById("themeFade");
+  if (!ov || currentThemeId() === id){ applyTheme(id); return; }
+  clearTimeout(_fadeT1); clearTimeout(_fadeT2);
+  ov.style.background = (THEME_META[id] || {}).bg || "#0b0d10";
+  ov.style.transition = "none";
+  ov.style.opacity = "0";
+  void ov.offsetWidth;                       // reflow so the next change animates
+  ov.style.transition = "opacity .2s ease";
+  ov.style.opacity = "1";
+  _fadeT1 = setTimeout(() => {
+    applyTheme(id);                           // swap palette while covered
+    void ov.offsetWidth;
+    ov.style.opacity = "0";
+    _fadeT2 = setTimeout(() => { ov.style.transition = ""; }, 260);
+  }, 200);
+}
+
+/* --- schedule maths (pure, `now` injectable for tests) --- */
+function parseHM(s){ const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "")); if (!m) return null;
+  const h = +m[1], mn = +m[2]; if (h > 23 || mn > 59) return null; return h * 60 + mn; }
+function fmtHM(mins){ mins = ((Math.round(mins) % 1440) + 1440) % 1440;
+  return String(Math.floor(mins / 60)).padStart(2, "0") + ":" + String(mins % 60).padStart(2, "0"); }
+function windowActive(w, mins){
+  const s = parseHM(w && w.start), e = parseHM(w && w.end);
+  if (s == null || e == null || s === e) return false;
+  return (s < e) ? (mins >= s && mins < e) : (mins >= s || mins < e);   // wrap past midnight
+}
+function scheduledThemeAt(now = new Date()){
+  const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+  if (sch.mode === "off") return null;
+  if (sch.mode === "system"){
+    let dark = false;
+    try { dark = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches; } catch (_) {}
+    return validTheme(dark ? sch.systemDark : sch.systemLight);
+  }
+  const mins = now.getHours() * 60 + now.getMinutes();
+  for (const w of (sch.windows || [])) if (windowActive(w, mins)) return validTheme(w.theme);
+  return sch.base ? validTheme(sch.base) : null;
+}
+function nextBoundaryAfter(now = new Date()){
+  const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+  if (sch.mode !== "windows") return null;
+  const marks = [...new Set((sch.windows || [])
+    .flatMap(w => [parseHM(w.start), parseHM(w.end)]).filter(m => m != null))].sort((a, b) => a - b);
+  if (!marks.length) return null;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  let next = marks.find(m => m > mins);
+  const d = new Date(now); d.setSeconds(0, 0);
+  if (next == null){ next = marks[0]; d.setDate(d.getDate() + 1); }
+  d.setHours(Math.floor(next / 60), next % 60, 0, 0);
+  return d.getTime();
+}
+function manualExpired(man, nowTs = Date.now()){
+  return !!(man && man.until != null && nowTs >= man.until);
+}
+
+/* --- defer switches during interaction --- */
+function interactionBusy(){
+  try {
+    if (SHEET.classList.contains("open")) return true;      // keypad = "typing an amount", edit sheets
+    if (FULL.classList.contains("open")) return true;        // settings / overlays / split-salary
+    if (ONB && !ONB.hidden) return true;                     // onboarding
+    if (document.getElementById("wrapWrap")) return true;    // Monthly Wrapped story
+    const ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName || "")) return true;
+  } catch (_) {}
+  return false;
+}
+let pendingScheduledTheme = null;
+function requestThemeSwitch(id, opts = {}){
+  id = id && validTheme(id);
+  if (!id || currentThemeId() === id){ pendingScheduledTheme = null; return; }
+  if (interactionBusy()){ pendingScheduledTheme = id; return; }
+  pendingScheduledTheme = null;
+  opts.smooth === false ? applyTheme(id) : applyThemeSmooth(id);
+}
+function flushPendingThemeSwitch(){
+  if (pendingScheduledTheme && !interactionBusy()){
+    const id = pendingScheduledTheme; pendingScheduledTheme = null;
+    applyThemeSmooth(id);
+  }
+}
+
+/* --- evaluation loop --- */
+function evaluateSchedule(now = new Date()){
+  const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+  if (sch.mode === "off") return;
+  let man = S.settings.themeManual;
+  if (man && manualExpired(man, now.getTime())){
+    S.settings.themeManual = null; man = null;
+    DB.setMeta("themeManual", null);
+  }
+  if (man) return;                                // manual pick still wins
+  const want = scheduledThemeAt(now);
+  if (want && want !== currentThemeId()){
+    requestThemeSwitch(want);
+    S.settings.theme = want;
+    DB.setMeta("theme", want);
+  }
+}
+let _schedInterval = null, _schedMQBound = false;
+function startScheduler(){
+  clearInterval(_schedInterval);
+  evaluateSchedule();
+  _schedInterval = setInterval(() => evaluateSchedule(), 30000);
+  if (!_schedMQBound && window.matchMedia){
+    try {
+      const mq = matchMedia("(prefers-color-scheme: dark)");
+      const h = () => evaluateSchedule();
+      mq.addEventListener ? mq.addEventListener("change", h) : mq.addListener(h);
+      _schedMQBound = true;
+    } catch (_) {}
+  }
+}
+
+/* --- what theme to show at startup --- */
+function resolveThemeOnBoot(){
+  const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+  let man = S.settings.themeManual;
+  if (man && manualExpired(man)){ S.settings.themeManual = null; DB.setMeta("themeManual", null); man = null; }
+  let id = validTheme(S.settings.theme);
+  if (man) id = validTheme(man.theme);
+  else if (sch.mode !== "off") id = scheduledThemeAt() || id;
+  S.settings.theme = id;
+  DB.setMeta("theme", id);
+  applyTheme(id);
+}
+
+/* --- manual pick / resume (called from settings) --- */
+async function pickThemeManually(id){
+  id = validTheme(id);
+  const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+  let man = null;
+  if (sch.mode === "windows") man = { theme: id, until: nextBoundaryAfter() };
+  else if (sch.mode === "system") man = { theme: id, until: null };
+  await DB.setMeta("themeManual", man);
+  S.settings.themeManual = man;
+  await DB.setMeta("theme", id);
+  S.settings.theme = id;
+  applyThemeSmooth(id);
+}
+async function resumeSchedule(){
+  await DB.setMeta("themeManual", null);
+  S.settings.themeManual = null;
+  const want = scheduledThemeAt();
+  if (want){ await DB.setMeta("theme", want); S.settings.theme = want; applyThemeSmooth(want); }
+}
+async function saveSchedule(patch){
+  const sch = { ...DEFAULT_SCHEDULE, ...(S.settings.themeSchedule || {}), ...patch };
+  sch.windows = (sch.windows || []).map(w => ({ start: w.start, end: w.end, theme: validTheme(w.theme) }));
+  if (sch.mode === "off"){ S.settings.themeManual = null; await DB.setMeta("themeManual", null); }
+  await DB.setMeta("themeSchedule", sch);
+  S.settings.themeSchedule = sch;
+  evaluateSchedule();
+}
 
 /* ---- [I] ONBOARDING ----------------------------------------------- */
 const ONB = document.getElementById("onb");
@@ -2390,6 +2654,7 @@ async function finishOnb(){
   await refresh();
   ONB.hidden = true; ONB.style.display = "none"; ONB.innerHTML = "";
   render();
+  afterInteraction();
 }
 
 /* ---- recurring rollover (auto-log pending when due) ---- */
@@ -2430,7 +2695,8 @@ async function boot(){
   await DB.open();
   await seedIfNeeded();
   await refresh();
-  applyTheme(S.settings.theme);
+  resolveThemeOnBoot();
+  startScheduler();
   await rollRecurring();
   go("home");
 
@@ -2484,7 +2750,11 @@ async function updateBadge(){
     if (n > 0) navigator.setAppBadge(n); else navigator.clearAppBadge();
   } catch(e){}
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden){ refresh().then(() => { updateBadge(); if (currentTab) render(); }); } });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden){
+    refresh().then(() => { updateBadge(); evaluateSchedule(); flushPendingThemeSwitch(); if (currentTab) render(); });
+  }
+});
 
 boot().catch((err) => {
   console.error("boot failed", err);

@@ -52,16 +52,25 @@ const mkEl = () => ({
   set innerHTML(v) {}, get innerHTML() { return ""; },
   textContent: "", value: "", offsetWidth: 0, hidden: false,
 });
+let _htmlTheme = "midnight";
 const document = {
-  getElementById: () => mkEl(), querySelector: () => mkEl(), querySelectorAll: () => [],
+  getElementById: (id) => (id === "wrapWrap" ? null : id === "onb" ? { ...mkEl(), hidden: true } : mkEl()),
+  querySelector: () => mkEl(), querySelectorAll: () => [],
   createElement: () => mkEl(), addEventListener() {},
-  body: mkEl(), documentElement: { setAttribute() {}, style: { setProperty() {} } },
+  body: mkEl(),
+  documentElement: {
+    setAttribute: (k, v) => { if (k === "data-theme") _htmlTheme = v; },
+    getAttribute: (k) => (k === "data-theme" ? _htmlTheme : null),
+    style: { setProperty() {} },
+  },
 };
 const navigator = { language: "en-OM" };
+let _prefersDark = false;                       // tests flip this for "system" mode
 const ctx = {
   console, document, navigator, localStorage,
   window: {}, globalThis: null,
   addEventListener() {}, removeEventListener() {},
+  matchMedia: (q) => ({ matches: /dark/.test(q) ? _prefersDark : !_prefersDark, media: q, addEventListener() {}, addListener() {}, removeEventListener() {} }),
   getComputedStyle: () => ({ getPropertyValue: () => "#0b0d10" }),
   requestAnimationFrame: () => 0, setTimeout, clearTimeout, setInterval, clearInterval,
   performance, Intl, Blob, URL, TextEncoder, TextDecoder, fetch: undefined,
@@ -73,7 +82,9 @@ vm.createContext(ctx);
 src = src.replace(/\nboot\(\)[\s\S]*$/, "\n");
 src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, keypadHTML, settingsHTML, sparkSVG,
   parseCSV, guessDate, csvParseRow, autoMap, isDuplicate, parseSMSBlock, splitBlocks, buildICS, icsSignature,
-  advanceDue, rollRecurring, DEFAULT_SMS_PATTERNS, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals };`;
+  advanceDue, rollRecurring, DEFAULT_SMS_PATTERNS, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals,
+  parseHM, fmtHM, windowActive, scheduledThemeAt, nextBoundaryAfter, manualExpired, currentThemeId,
+  evaluateSchedule, applyTheme, THEME_META, THEME_IDS, themeName, scheduleHTML };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
 const { U, F, S, DB, newDraft, displayAmount, SCREENS, keypadHTML, settingsHTML } = T;
@@ -317,6 +328,91 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   const sig1 = T.icsSignature();
   S.recurring[0].nextDue += 86400000;
   ok("icsSignature changes when a due date changes", T.icsSignature() !== sig1);
+}
+
+/* ---- 7g. theme auto-scheduler ---- */
+{
+  const at = (h, m = 0) => new Date(2026, 7, 27, h, m, 0); // Aug 27 2026 local
+
+  eq("parseHM '18:30'", T.parseHM("18:30"), 18 * 60 + 30);
+  eq("parseHM '06:00'", T.parseHM("06:00"), 360);
+  eq("parseHM bad", T.parseHM("9:99"), null);
+  eq("fmtHM 1110", T.fmtHM(1110), "18:30");
+  eq("fmtHM wraps -60 -> 23:00", T.fmtHM(-60), "23:00");
+
+  // normal window 09:00-17:00 (end exclusive)
+  ok("windowActive normal @12:00", T.windowActive({ start: "09:00", end: "17:00" }, 12 * 60));
+  ok("windowActive normal @08:59 false", !T.windowActive({ start: "09:00", end: "17:00" }, 8 * 60 + 59));
+  ok("windowActive normal @17:00 false (exclusive end)", !T.windowActive({ start: "09:00", end: "17:00" }, 17 * 60));
+  // wrap-past-midnight window 18:00-06:00
+  const wrap = { start: "18:00", end: "06:00" };
+  ok("wrap window @23:00", T.windowActive(wrap, 23 * 60));
+  ok("wrap window @03:00", T.windowActive(wrap, 3 * 60));
+  ok("wrap window @18:00 (inclusive start)", T.windowActive(wrap, 18 * 60));
+  ok("wrap window @06:00 false (exclusive end)", !T.windowActive(wrap, 6 * 60));
+  ok("wrap window @12:00 false", !T.windowActive(wrap, 12 * 60));
+
+  // scheduledThemeAt across the day
+  S.settings.themeSchedule = {
+    mode: "windows", base: "desert",
+    windows: [{ start: "18:00", end: "06:00", theme: "depth" }, { start: "06:00", end: "12:00", theme: "paper" }],
+    systemLight: "paper", systemDark: "midnight",
+  };
+  eq("sched @20:00 -> depth (night window)", T.scheduledThemeAt(at(20)), "depth");
+  eq("sched @02:00 -> depth (wraps midnight)", T.scheduledThemeAt(at(2)), "depth");
+  eq("sched @08:00 -> paper (morning window)", T.scheduledThemeAt(at(8)), "paper");
+  eq("sched @14:00 -> desert (gap -> base)", T.scheduledThemeAt(at(14)), "desert");
+  eq("sched @18:00 -> depth (boundary)", T.scheduledThemeAt(at(18)), "depth");
+
+  // next boundary
+  eq("nextBoundary @20:00 -> 06:00 tomorrow", new Date(T.nextBoundaryAfter(at(20))).getHours(), 6);
+  {
+    const nb = new Date(T.nextBoundaryAfter(at(20)));
+    ok("nextBoundary @20:00 is next calendar day", nb.getDate() === 28);
+  }
+  eq("nextBoundary @08:00 -> 12:00 today (hour)", new Date(T.nextBoundaryAfter(at(8))).getHours(), 12);
+  eq("nextBoundary @13:00 -> 18:00 today (hour)", new Date(T.nextBoundaryAfter(at(13))).getHours(), 18);
+  eq("nextBoundary @05:00 -> 06:00 today (hour)", new Date(T.nextBoundaryAfter(at(5))).getHours(), 6);
+
+  // "system" mode
+  S.settings.themeSchedule = { mode: "system", systemLight: "paper", systemDark: "midnight", windows: [], base: "midnight" };
+  _prefersDark = false;
+  eq("system mode, light -> paper", T.scheduledThemeAt(at(3)), "paper");
+  _prefersDark = true;
+  eq("system mode, dark -> midnight", T.scheduledThemeAt(at(3)), "midnight");
+  eq("system mode: nextBoundary is null (event-driven)", T.nextBoundaryAfter(at(3)), null);
+  _prefersDark = false;
+
+  // "off" mode
+  S.settings.themeSchedule = { mode: "off", windows: [], base: "midnight", systemLight: "paper", systemDark: "midnight" };
+  eq("off mode -> scheduledThemeAt null", T.scheduledThemeAt(at(20)), null);
+
+  // manual override expiry
+  ok("manualExpired: future until -> not expired", !T.manualExpired({ theme: "depth", until: at(20).getTime() + 3600000 }, at(20).getTime()));
+  ok("manualExpired: past until -> expired", T.manualExpired({ theme: "depth", until: at(20).getTime() - 1 }, at(20).getTime()));
+  ok("manualExpired: null until -> never expires", !T.manualExpired({ theme: "depth", until: null }, at(20).getTime()));
+
+  // evaluateSchedule applies the scheduled theme; a live manual override blocks it
+  // (applyThemeSmooth defers the swap ~200ms behind the crossfade, so await it)
+  const settle = () => new Promise((r) => setTimeout(r, 280));
+  T.applyTheme("midnight");
+  S.settings.themeSchedule = {
+    mode: "windows", base: "midnight",
+    windows: [{ start: "18:00", end: "06:00", theme: "depth" }], systemLight: "paper", systemDark: "midnight",
+  };
+  S.settings.themeManual = null;
+  T.evaluateSchedule(at(21)); await settle();
+  eq("evaluateSchedule @21:00 switches to depth", T.currentThemeId(), "depth");
+  T.applyTheme("midnight");
+  S.settings.themeManual = { theme: "paper", until: at(21).getTime() + 3600000 };
+  T.evaluateSchedule(at(21)); await settle();
+  eq("evaluateSchedule respects a live manual override (stays midnight)", T.currentThemeId(), "midnight");
+  S.settings.themeManual = { theme: "paper", until: at(21).getTime() - 1 };  // expired
+  T.evaluateSchedule(at(21)); await settle();
+  eq("evaluateSchedule resumes schedule after override expires", T.currentThemeId(), "depth");
+  S.settings.themeManual = null;
+
+  ok("scheduleHTML renders for windows mode", /SCHEDULE/.test(T.scheduleHTML()) && /Add window/.test(T.scheduleHTML()));
 }
 
 /* ---- 8. screen render smoke tests (no throw, returns HTML) ---- */

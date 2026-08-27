@@ -165,6 +165,78 @@ const failedRequests = [];
   await page.evaluate(() => document.querySelector('nav#tabs [data-tab="home"]').click());
   await new Promise((r) => setTimeout(r, 200));
 
+  // ---- every theme renders with readable contrast ----
+  const themeIds = await page.evaluate(() => (typeof THEME_IDS !== "undefined" ? THEME_IDS : []));
+  ok("THEME_IDS registry exposed", themeIds.length >= 4, JSON.stringify(themeIds));
+  for (const id of themeIds) {
+    await page.evaluate((t) => applyTheme(t), id);
+    await new Promise((r) => setTimeout(r, 120));
+    const t = await page.evaluate(() => {
+      const rgb = (varName) => {                       // resolve a CSS custom prop to real rgb
+        const p = document.createElement("span");
+        p.style.cssText = "position:absolute;opacity:0;color:var(" + varName + ")";
+        document.body.appendChild(p);
+        const c = getComputedStyle(p).color;
+        p.remove();
+        return (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      };
+      const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= .03928 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); };
+        return .2126 * f(r) + .7152 * f(g) + .0722 * f(b); };
+      const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + .05) / (y + .05); };
+      const bg = (getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      const cText = contrast(bg, rgb("--text"));
+      const cDim = contrast(bg, rgb("--text-dim"));
+      return {
+        theme: document.documentElement.getAttribute("data-theme"),
+        textOK: cText >= 4.5, dimOK: cDim >= 3,
+        cText: +cText.toFixed(2), cDim: +cDim.toFixed(2),
+      };
+    });
+    ok(`theme "${id}": body text contrast >= 4.5 (${t.cText})`, t.textOK, JSON.stringify(t));
+    ok(`theme "${id}": dim text contrast >= 3 (${t.cDim})`, t.dimOK, JSON.stringify(t));
+    await page.screenshot({ path: path.join(__dir, `screenshot-theme-${id}.png`) });
+  }
+  await page.evaluate(() => applyTheme("midnight"));
+
+  // ---- auto-scheduler: a scheduled switch actually applies (with crossfade) ----
+  const sched = await page.evaluate(async () => {
+    window.matchMedia = window.matchMedia || ((q) => ({ matches: false, media: q, addEventListener() {}, addListener() {}, removeEventListener() {} }));
+    applyTheme("paper");
+    await saveSchedule({ mode: "windows", base: "midnight", windows: [{ start: "18:00", end: "06:00", theme: "depth" }] });
+    S.settings.themeManual = null;
+    const fadeBefore = getComputedStyle(document.getElementById("themeFade")).opacity;
+    evaluateSchedule(new Date(2026, 7, 27, 21, 0, 0));            // 21:00 -> depth window
+    await new Promise((r) => setTimeout(r, 100));
+    const fadeMid = parseFloat(getComputedStyle(document.getElementById("themeFade")).opacity);
+    await new Promise((r) => setTimeout(r, 400));
+    return { after: document.documentElement.getAttribute("data-theme"),
+             fadeBefore: parseFloat(fadeBefore), fadeMid,
+             fadeAfter: parseFloat(getComputedStyle(document.getElementById("themeFade")).opacity) };
+  });
+  ok("scheduler switches theme in real browser (paper -> depth at 21:00)", sched.after === "depth", JSON.stringify(sched));
+  ok("crossfade overlay animates then clears", sched.fadeBefore === 0 && sched.fadeMid > 0 && sched.fadeAfter === 0, JSON.stringify(sched));
+
+  // schedule editor UI renders (screenshot for eyeballing)
+  await page.evaluate(async () => {
+    await saveSchedule({ mode: "windows", base: "paper", windows: [
+      { start: "18:00", end: "06:00", theme: "midnight" }, { start: "06:00", end: "12:00", theme: "paper" }] });
+    S.settings.themeManual = { theme: "desert", until: Date.now() + 3600000 };
+    applyTheme("desert");
+    openOverlay("settings");
+  });
+  await new Promise((r) => setTimeout(r, 250));
+  const schedUI = await page.evaluate(() => ({
+    hasSeg: document.querySelectorAll("[data-sched-mode]").length === 3,
+    winRows: document.querySelectorAll(".sched-win").length,
+    hasResume: !!document.getElementById("schedResume"),
+    noteText: (document.querySelector(".sched-note") || {}).textContent || "",
+  }));
+  ok("schedule editor: 3 modes + 2 window rows + resume banner", schedUI.hasSeg && schedUI.winRows === 2 && schedUI.hasResume, JSON.stringify(schedUI));
+  ok("schedule banner reads 'Manual: Desert'", /Manual:\s*Desert/.test(schedUI.noteText), schedUI.noteText);
+  await page.screenshot({ path: path.join(__dir, "screenshot-schedule.png") });
+  await page.evaluate(async () => { closeFull(); await saveSchedule({ mode: "off" }); S.settings.themeManual = null; applyTheme("midnight"); });
+  await new Promise((r) => setTimeout(r, 350));
+
   // ---- service worker ----
   const sw = await page.evaluate(async () => {
     if (!("serviceWorker" in navigator)) return { supported: false };

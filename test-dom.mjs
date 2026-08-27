@@ -227,6 +227,65 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   ok("theme switches to Paper", doc.documentElement.getAttribute("data-theme") === "paper");
   ok("theme persisted", win.localStorage.getItem("rial:meta:theme") === '"paper"');
 
+  // --- Theme auto-scheduler ---
+  win.matchMedia = win.matchMedia || ((q) => ({ matches: false, media: q, addEventListener() {}, addListener() {}, removeEventListener() {} }));
+  const themeAt = (expr) => win.eval(`(function(){ ${expr}; return document.documentElement.getAttribute('data-theme'); })()`);
+  // configure a windows schedule: 18:00-06:00 Midnight, 06:00-12:00 Paper, otherwise Desert
+  win.eval(`saveSchedule({ mode:"windows", base:"desert",
+    windows:[{start:"18:00",end:"06:00",theme:"midnight"},{start:"06:00",end:"12:00",theme:"paper"}] })`);
+  win.eval("closeFull()"); await sleep(360);   // leave settings so switches aren't deferred
+  win.eval("S.settings.themeManual = null; applyTheme('desert')");
+
+  win.eval("evaluateSchedule(new Date(2026,7,27,20,0,0))"); await sleep(320);
+  ok("scheduler: 20:00 -> midnight (night window)", doc.documentElement.getAttribute("data-theme") === "midnight");
+
+  win.eval("evaluateSchedule(new Date(2026,7,27,8,0,0))"); await sleep(320);
+  ok("scheduler: 08:00 -> paper (morning window)", doc.documentElement.getAttribute("data-theme") === "paper");
+
+  win.eval("evaluateSchedule(new Date(2026,7,27,14,0,0))"); await sleep(320);
+  ok("scheduler: 14:00 -> desert (gap uses base)", doc.documentElement.getAttribute("data-theme") === "desert");
+
+  // wrap-past-midnight: 02:00 falls in the 18:00-06:00 window
+  win.eval("applyTheme('paper'); evaluateSchedule(new Date(2026,7,28,2,0,0))"); await sleep(320);
+  ok("scheduler: 02:00 -> midnight (window wraps past midnight)", doc.documentElement.getAttribute("data-theme") === "midnight");
+
+  // deferral: a scheduled switch must NOT fire while a modal is open, then applies on close
+  win.eval("applyTheme('desert'); openFull('<div>busy</div>')");
+  win.eval("evaluateSchedule(new Date(2026,7,27,20,0,0))"); await sleep(320);
+  ok("scheduler: switch deferred while modal open", doc.documentElement.getAttribute("data-theme") === "desert");
+  ok("scheduler: pending switch is queued", win.eval("pendingScheduledTheme") === "midnight");
+  win.eval("closeFull()"); await sleep(650);
+  ok("scheduler: queued switch applies after modal closes", doc.documentElement.getAttribute("data-theme") === "midnight");
+
+  // manual override wins until resume
+  win.eval('applyTheme("desert")');
+  win.eval('pickThemeManually("paper")'); await sleep(320);
+  ok("manual pick applies immediately", doc.documentElement.getAttribute("data-theme") === "paper");
+  ok("manual override recorded with a boundary time",
+     typeof JSON.parse(win.localStorage.getItem("rial:meta:themeManual") || "null")?.until === "number");
+  // pin the override boundary relative to the simulated clock so the test is deterministic
+  win.eval("S.settings.themeManual.until = new Date(2026,7,27,23,0,0).getTime()");
+  win.eval("evaluateSchedule(new Date(2026,7,27,20,0,0))"); await sleep(320);   // 20:00 < 23:00 boundary
+  ok("scheduler: manual override blocks the scheduled switch", doc.documentElement.getAttribute("data-theme") === "paper");
+  win.eval("evaluateSchedule(new Date(2026,7,28,0,0,0))"); await sleep(320);    // now past the 23:00 boundary
+  ok("scheduler: override expires at its boundary, schedule resumes", doc.documentElement.getAttribute("data-theme") === "midnight");
+  ok("scheduler: expired override cleared from storage", win.localStorage.getItem("rial:meta:themeManual") === "null");
+
+  win.eval('pickThemeManually("paper")'); await sleep(200);
+  win.eval("resumeSchedule()"); await sleep(320);
+  ok("resume schedule: manual override cleared", win.localStorage.getItem("rial:meta:themeManual") === "null");
+
+  // settings shows the manual-override banner
+  win.eval('applyTheme("midnight")');
+  win.eval('saveSchedule({mode:"windows"})'); await sleep(60);
+  win.eval('pickThemeManually("desert")'); await sleep(220);
+  win.eval('openOverlay("settings")');
+  await until(() => $("#full.open"), "settings reopened");
+  ok("settings shows 'Resume schedule' when overridden", !!$("#schedResume"));
+  ok("settings banner names the manual theme", /Manual:\s*Desert/i.test($(".sched-note")?.textContent || ""));
+  win.eval("resumeSchedule()"); await sleep(200);
+  win.eval("saveSchedule({mode:'off'}); closeFull()"); await sleep(360);
+
   // Export backup builds valid JSON (stub blob)
   let exported = null;
   win.Blob = class { constructor(parts){ exported = parts[0]; } };
@@ -234,6 +293,7 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   await until(() => exported, "export produced content");
   const dump = JSON.parse(exported);
   ok("export JSON is a Rial backup", dump.app === "rial" && dump.data.transactions.length >= 4 && dump.meta.monthlyIncome === 900000);
+  ok("export includes theme schedule state", "themeSchedule" in dump.meta && "themeManual" in dump.meta);
 
   ok("no jsdom errors accumulated", errors.length === 0, errors.slice(0, 3).join(" | "));
 

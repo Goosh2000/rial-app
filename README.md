@@ -29,23 +29,26 @@ Then open the URL in a browser. On `file://` the app runs but the SW won't regis
 ## Test
 ```
 npm install      # once — pulls jsdom + puppeteer-core (dev only, not shipped)
-npm test         # test.mjs  +  test-dom.mjs  +  test-browser.mjs   (163 assertions)
+npm test         # test.mjs  +  test-dom.mjs  +  test-browser.mjs   (226 assertions)
 ```
-- **`test.mjs`** (113) — pure logic in a `vm` sandbox: money math (integer baisa, no float
+- **`test.mjs`** (147) — pure logic in a `vm` sandbox: money math (integer baisa, no float
   drift), Asia/Muscat month/date boundaries, Safe-to-Spend (flat + envelope-aware),
   recurring-cadence normalisation & rollover, round-up sim, CSV parser + dedupe, SMS regex
-  extractor, `.ics` structure/validity, export/import round-trip, every screen renders.
-- **`test-dom.mjs`** (30) — real `index.html` in jsdom, driven through real event handlers:
+  extractor, `.ics` structure/validity, export/import round-trip, every screen renders,
+  **theme scheduler** (window matching incl. wrap-past-midnight, next-boundary, system mode,
+  manual-override expiry, `evaluateSchedule`).
+- **`test-dom.mjs`** (46) — real `index.html` in jsdom, driven through real event handlers:
   onboarding → keypad add → tab nav → split-salary → envelope-aware STS → wishlist 30-day
   lock → goal + move-to-savings transfer → SMS paste → CSV import + dedupe → `.ics` build →
-  theme switch → JSON export. Includes a regression check that `#onb` computes to
-  `display:none` when hidden.
-- **`test-browser.mjs`** (20) — the app served over HTTP and loaded in real headless Chrome
+  theme switch → **scheduler switches at simulated times, defers while a modal is open then
+  applies on close, manual override + resume, wrap-past-midnight** → JSON export (incl.
+  schedule state). Regression check that `#onb` computes to `display:none` when hidden.
+- **`test-browser.mjs`** (33) — the app served over HTTP and loaded in real headless Chrome
   (auto-detected; Edge fallback; skips if neither installed). Asserts **no full-screen
-  overlay covers the app** (`elementFromPoint` at 3 heights), the dashboard/tabs/keypad
-  actually paint, the service worker registers, the page still renders after a hard reload
-  and **offline**, and there are zero console/page errors or failed requests. Writes
-  `screenshot-*.png` for each screen.
+  overlay covers the app**, the dashboard/tabs/keypad paint, **every theme's body/dim text
+  meets WCAG-AA contrast**, **a scheduled switch actually applies with the crossfade**, the
+  schedule editor renders, the service worker registers, the page still renders after a hard
+  reload and **offline**, zero console/page errors. Writes `screenshot-*.png` for each screen.
 
 **Not** covered: touch-gesture feel, iOS Badging API, live Tesseract OCR accuracy, `.ics`
 import into Apple Calendar — verify those on a device.
@@ -73,6 +76,7 @@ import into Apple Calendar — verify those on a device.
 | 9 | Screenshot OCR — Tesseract.js, lazy-loaded from CDN once then SW-cached, on-device, mandatory review | ✅ |
 | 10 | Monthly Plan — split-salary ritual (goals first, then envelope sliders), pace indicators, envelope moves | ✅ |
 | 11 | Notifications — `.ics` export (payments/wishlist/salary + alarms), staleness check, app-badge, in-app center | ✅ |
+| +  | **Theme auto-scheduler** — Settings › Theme › Schedule: Off / Match system / Time windows (wrap past midnight OK). Crossfades, never mid-interaction. Manual pick wins until the next boundary with a "resume schedule" banner. In `themeSchedule`/`themeManual` meta, included in backup. `THEME_META` is the single theme registry. | ✅ |
 
 ### Known limitations / notes
 - **Badging API** updates only while the app or its SW is running — it reflects state "as of last open". iOS can't refresh it in the background.

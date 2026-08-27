@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "3";
+const SW_VERSION = "4";   // v4: theme auto-scheduler
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [
