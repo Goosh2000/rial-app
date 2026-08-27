@@ -45,15 +45,19 @@ if ($LASTEXITCODE -ne 0) {
   git push -u origin main
 }
 
-# enable GitHub Pages from the main branch root
+# enable GitHub Pages from the main branch root (JSON body via --input, most reliable)
 Write-Host "Enabling GitHub Pages ..."
-try {
-  & $gh api -X POST "repos/$user/$repo/pages" -f "source[branch]=main" -f "source[path]=/" 1>$null 2>$null
-} catch {}
-# if it already existed, make sure it points at main/root
-try {
-  & $gh api -X PUT "repos/$user/$repo/pages" -f "source[branch]=main" -f "source[path]=/" 1>$null 2>$null
-} catch {}
+$body = '{"source":{"branch":"main","path":"/"}}'
+$body | & $gh api -X POST "repos/$user/$repo/pages" --input - 1>$null 2>$null
+if ($LASTEXITCODE -ne 0) {
+  # already exists -> update it to point at main/root
+  $body | & $gh api -X PUT "repos/$user/$repo/pages" --input - 1>$null 2>$null
+}
+# also enable via the Pages build workflow permission if needed
+& $gh api "repos/$user/$repo/pages" 1>$null 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "  (couldn't confirm Pages via API — enable it manually: repo Settings -> Pages -> Source: Deploy from a branch -> main / root)"
+}
 
 $pagesUrl = "https://$user.github.io/$repo/"
 Write-Host ""
