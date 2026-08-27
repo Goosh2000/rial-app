@@ -5,24 +5,62 @@ Safari storage (IndexedDB). **Export a backup regularly — it is the only copy.
 
 ---
 
-## 1. Put it online (pick one — both free)
+## 1. Put it online — GitHub Pages (free, permanent, your account)
 
-### Option A — Netlify Drop (fastest, ~1 min)
-1. Go to <https://app.netlify.com/drop>
-2. Drag the **whole `rial-app` folder** onto the page.
-3. Netlify gives you a URL like `https://rial-xyz.netlify.app`. Open it on your iPhone.
+The repo is already initialised and committed locally (`git log` shows one commit).
+You just need to authenticate GitHub CLI once, then run the deploy script.
 
-### Option B — GitHub Pages (free, permanent, your account)
-1. Create a repo, e.g. `rial-app`, and push these files to the root:
-   ```
-   index.html  manifest.json  sw.js
-   icon-180.png  icon-192.png  icon-512.png  icon-512-maskable.png
-   ```
-   (The `build-icons.js`, `test.mjs`, `*.md` files are dev-only — harmless to include.)
-2. Repo → **Settings → Pages** → Source: `Deploy from a branch` → Branch: `main` / `/root` → Save.
-3. Wait ~1 min. Your app is at `https://<your-username>.github.io/rial-app/`.
+### 1a. Authenticate GitHub CLI (`gh auth login`) — one time
 
-> A service worker requires **HTTPS**. Netlify and GitHub Pages both give you HTTPS automatically. Opening `index.html` from a `file://` path will *not* register the service worker (the app still works, just not fully offline until hosted).
+`gh` (v2.98) is installed. In a terminal run:
+
+```
+gh auth login
+```
+
+Answer the prompts:
+1. **What account do you want to log into?** → `GitHub.com`
+2. **What is your preferred protocol for Git operations?** → `HTTPS`
+3. **Authenticate Git with your GitHub credentials?** → `Yes`
+4. **How would you like to authenticate?** → `Login with a web browser`
+5. It shows a **one-time code** (e.g. `AB12-CD34`) and opens <https://github.com/login/device>.
+   Paste the code there, approve, come back to the terminal.
+
+Verify:
+```
+gh auth status        # should say "Logged in to github.com as <you>"
+```
+
+> If `gh` isn't on your PATH yet (fresh install), open a **new** terminal, or use the full
+> path: `& "C:\Program Files\GitHub CLI\gh.exe" auth login`.
+
+### 1b. Deploy
+
+```
+cd "C:\Users\Windows 10 Pro\projects\rial-app"
+powershell -ExecutionPolicy Bypass -File .\deploy.ps1
+```
+
+The script: creates `github.com/<you>/rial-app` (**public** — see note), pushes, enables
+Pages from `main` / root, then polls the live URL until it returns HTTP 200 and prints:
+
+```
+LIVE  ->  https://<you>.github.io/rial-app/
+```
+
+> **Public vs private:** GitHub Pages on a *private* repo needs a paid plan. On the free
+> plan the repo must be **public** — which only exposes the app *code* (no secrets in it);
+> every byte of your financial data stays on your device and never touches the repo.
+> To use a private repo (paid): `.\deploy.ps1 -Private`.
+
+### Netlify Drop (only if the 401 you saw was a fluke you want to retry)
+
+Drag the **whole `rial-app` folder** onto <https://app.netlify.com/drop>. The earlier 401
+means that Drop site was unpublished / password-protected — use "Publish deploy" in the
+Netlify dashboard, or just use GitHub Pages above.
+
+> A service worker needs **HTTPS**. GitHub Pages and Netlify both provide it. Opening
+> `index.html` from a `file://` path runs the app but won't register the service worker.
 
 ### Regenerating icons
 Only needed if you change the icon design in `build-icons.js`:
@@ -42,6 +80,26 @@ node build-icons.js
 
 **iOS version:** you need iOS 16.4 or newer for the app-icon badge to work. Everything
 else works on iOS 15+.
+
+---
+
+## 2b. If the app ever shows a blank/old screen (service worker)
+
+The service worker (`sw.js`) is **network-first and fail-open**: when you're online it
+always fetches the fresh page and only falls back to cache when offline. Each release
+bumps `SW_VERSION`, and activating a new worker deletes every old cache. So a stale page
+should never "stick" — but if you ever suspect it has:
+
+**In the app:** Settings → Troubleshooting → **Clear cache & reload**. (Your data is untouched.)
+
+**Manually on iPhone:** Settings → Safari → Advanced → Website Data → swipe-delete the
+`github.io` entry → reopen the app. (This also clears IndexedDB, so **export a backup first**.)
+
+**On desktop Chrome/Edge (for testing):** DevTools → Application → Service Workers →
+*Unregister*, then Application → Storage → *Clear site data*.
+
+**When you deploy an update:** bump `SW_VERSION` in `sw.js` (e.g. `"3"` → `"4"`) before
+pushing. Existing installs pick it up on next launch and auto-reload once.
 
 ---
 

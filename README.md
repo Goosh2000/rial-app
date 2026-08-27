@@ -11,8 +11,10 @@ no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON ba
 | `sw.js` | service worker — offline shell + OCR-asset caching |
 | `icon-*.png` | app icons (generated) |
 | `build-icons.js` | regenerates icons — pure Node, no deps: `node build-icons.js` |
-| `test.mjs` | headless logic tests: `node test.mjs` |
-| `SETUP.md` | how to host it and add it to an iPhone |
+| `test*.mjs` | test suites (see **Test** below) |
+| `deploy.ps1` | one-shot GitHub Pages deploy (run after `gh auth login`) |
+| `SETUP.md` | deploy + install on iPhone, clearing a stale service worker |
+| `package.json` / `node_modules/` | **dev tooling only** — the app ships without them |
 
 ## Run locally
 Any static server over HTTPS (or `localhost`) so the service worker registers:
@@ -23,21 +25,34 @@ Then open the URL in a browser. On `file://` the app runs but the SW won't regis
 
 ## Test
 ```
-npm install      # once, pulls jsdom (dev only)
-npm test         # node test.mjs  +  node test-dom.mjs
+npm install      # once — pulls jsdom + puppeteer-core (dev only, not shipped)
+npm test         # test.mjs  +  test-dom.mjs  +  test-browser.mjs   (163 assertions)
 ```
-- `test.mjs` (113 assertions) — pure logic in a `vm` sandbox: money math (integer baisa,
-  no float drift), Asia/Muscat month/date boundaries, Safe-to-Spend (flat + envelope-aware),
+- **`test.mjs`** (113) — pure logic in a `vm` sandbox: money math (integer baisa, no float
+  drift), Asia/Muscat month/date boundaries, Safe-to-Spend (flat + envelope-aware),
   recurring-cadence normalisation & rollover, round-up sim, CSV parser + dedupe, SMS regex
   extractor, `.ics` structure/validity, export/import round-trip, every screen renders.
-- `test-dom.mjs` (29 assertions) — real `index.html` booted in jsdom, driven through real
-  event handlers: onboarding → add transaction via keypad → tab nav → split-salary ritual →
-  envelope-aware STS → wishlist 30-day lock → goal + move-to-savings transfer → SMS paste →
-  CSV import + duplicate detection → `.ics` build → theme switch → JSON export.
+- **`test-dom.mjs`** (30) — real `index.html` in jsdom, driven through real event handlers:
+  onboarding → keypad add → tab nav → split-salary → envelope-aware STS → wishlist 30-day
+  lock → goal + move-to-savings transfer → SMS paste → CSV import + dedupe → `.ics` build →
+  theme switch → JSON export. Includes a regression check that `#onb` computes to
+  `display:none` when hidden.
+- **`test-browser.mjs`** (20) — the app served over HTTP and loaded in real headless Chrome
+  (auto-detected; Edge fallback; skips if neither installed). Asserts **no full-screen
+  overlay covers the app** (`elementFromPoint` at 3 heights), the dashboard/tabs/keypad
+  actually paint, the service worker registers, the page still renders after a hard reload
+  and **offline**, and there are zero console/page errors or failed requests. Writes
+  `screenshot-*.png` for each screen.
 
-**Not** covered by either: real layout/paint, touch gestures, service-worker offline
-behaviour, iOS Badging API, actual Tesseract OCR accuracy, `.ics` import into iOS Calendar —
-verify those on a device.
+**Not** covered: touch-gesture feel, iOS Badging API, live Tesseract OCR accuracy, `.ics`
+import into Apple Calendar — verify those on a device.
+
+## Crash safety
+- A crash-guard at the very top of the script turns any uncaught error / unhandled
+  rejection into **visible red text on the page** — a JS error can never produce a silent
+  black screen again. `boot()` has its own `.catch` into the same overlay.
+- The service worker is **network-first + fail-open** with versioned caches; Settings →
+  Troubleshooting → "Clear cache & reload" nukes SW + caches without touching data.
 
 ## Build status — all MVP features implemented
 
