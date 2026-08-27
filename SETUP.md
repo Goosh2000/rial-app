@@ -98,8 +98,20 @@ should never "stick" — but if you ever suspect it has:
 **On desktop Chrome/Edge (for testing):** DevTools → Application → Service Workers →
 *Unregister*, then Application → Storage → *Clear site data*.
 
-**When you deploy an update:** bump `SW_VERSION` in `sw.js` (e.g. `"3"` → `"4"`) before
-pushing. Existing installs pick it up on next launch and auto-reload once.
+### Redeploying an update
+
+1. Bump `SW_VERSION` in `sw.js` (e.g. `"4"` → `"5"`).
+2. One line:
+   ```
+   git -C "C:\Users\Windows 10 Pro\projects\rial-app" add -A && git -C "C:\Users\Windows 10 Pro\projects\rial-app" commit -m "update" && git -C "C:\Users\Windows 10 Pro\projects\rial-app" push
+   ```
+   (or `git add -A && git commit -m "update" && git push` from inside the folder; or `.\deploy.ps1`, which also re-checks Pages.)
+3. GitHub Pages rebuilds in ~1–2 min. Check: `gh api repos/Goosh2000/rial-app/pages/builds/latest --jq .status` → `built`.
+
+**Refresh it on your iPhone** — an installed PWA doesn't update instantly:
+- Just relaunch the Rial icon **twice**. First launch fetches the new service worker; it activates and the app auto-reloads into the new version on the second launch (or a few seconds into the first).
+- If it still looks old: open Rial → **Settings → Troubleshooting → Clear cache & reload** (data is kept).
+- Last resort: delete the Home-Screen icon and re-add from Safari (**export a backup first** — this wipes local data).
 
 ---
 
