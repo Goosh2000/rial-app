@@ -22,6 +22,7 @@
     "r-sm": "3px"
   },
   "font": {
+    "family": "Orbitron",
     "heading": "\"Orbitron\", \"Rajdhani\", \"SF Pro Display\", \"Segoe UI\", system-ui, sans-serif",
     "imports": [
       "https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@600;700&display=swap"

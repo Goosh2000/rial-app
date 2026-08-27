@@ -69,11 +69,17 @@ let _prefersDark = false;                       // tests flip this for "system" 
 const ctx = {
   console, document, navigator, localStorage,
   window: {}, globalThis: null,
+  location: { origin: "https://goosh2000.github.io", pathname: "/rial-app/", search: "", hash: "" },
+  history: { replaceState() {} },
   addEventListener() {}, removeEventListener() {},
   matchMedia: (q) => ({ matches: /dark/.test(q) ? _prefersDark : !_prefersDark, media: q, addEventListener() {}, addListener() {}, removeEventListener() {} }),
   getComputedStyle: () => ({ getPropertyValue: () => "#0b0d10" }),
   requestAnimationFrame: () => 0, setTimeout, clearTimeout, setInterval, clearInterval,
   performance, Intl, Blob, URL, TextEncoder, TextDecoder, fetch: undefined,
+  btoa: (s) => Buffer.from(s, "binary").toString("base64"),
+  atob: (s) => Buffer.from(s, "base64").toString("binary"),
+  CompressionStream: typeof CompressionStream === "function" ? CompressionStream : undefined,
+  DecompressionStream: typeof DecompressionStream === "function" ? DecompressionStream : undefined,
 };
 ctx.window = ctx; ctx.globalThis = ctx;
 vm.createContext(ctx);
@@ -84,7 +90,11 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   parseCSV, guessDate, csvParseRow, autoMap, isDuplicate, parseSMSBlock, splitBlocks, buildICS, icsSignature,
   advanceDue, rollRecurring, DEFAULT_SMS_PATTERNS, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals,
   parseHM, fmtHM, windowActive, scheduledThemeAt, nextBoundaryAfter, manualExpired, currentThemeId,
-  evaluateSchedule, applyTheme, THEMES, THEME_IDS, THEME_DEFAULT, themeName, themeBg, validTheme, scheduleHTML };`;
+  evaluateSchedule, applyTheme, THEMES, THEME_DEFAULT, THEME_TOKEN_KEYS, themeName, themeBg, validTheme, scheduleHTML,
+  QR, validateSharedTheme, encodeThemeLink, decodeThemeLink, serializeThemeForShare, buildShareLink,
+  isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
+  b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
+  get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
 const { U, F, S, DB, newDraft, displayAmount, SCREENS, keypadHTML, settingsHTML } = T;
@@ -356,6 +366,164 @@ try {
   ok("build-themes.js --check: index.html is in sync with theme files", true);
 } catch (e) {
   ok("build-themes.js --check: index.html is in sync with theme files", false, String(e.stdout || e.stderr || e));
+}
+
+/* ---- 7g0c. QR encoder (round-trips through jsQR) ---- */
+{
+  const jsQR = (await import("jsqr")).default;
+  const raster = (qr, scale = 5, border = 4) => {
+    const dim = (qr.size + border * 2) * scale;
+    const data = new Uint8ClampedArray(dim * dim * 4).fill(255);
+    for (let y = 0; y < qr.size; y++) for (let x = 0; x < qr.size; x++) if (qr.modules[y][x])
+      for (let sy = 0; sy < scale; sy++) for (let sx = 0; sx < scale; sx++) {
+        const p = (((y + border) * scale + sy) * dim + ((x + border) * scale + sx)) * 4;
+        data[p] = data[p + 1] = data[p + 2] = 0;
+      }
+    return { data, dim };
+  };
+  for (const s of ["HELLO", "https://goosh2000.github.io/rial-app/#theme=d" + "Ab1C".repeat(120)]) {
+    const qr = T.QR.encode(s, T.QR.ECL.L);
+    eq(`QR size formula (v${qr.version})`, qr.size, 21 + 4 * (qr.version - 1));
+    ok("QR finder pattern present", qr.modules[0][0] && qr.modules[6][6] && !qr.modules[1][1]);
+    const { data, dim } = raster(qr);
+    const dec = jsQR(data, dim, dim);
+    ok(`QR round-trips a ${s.length}-char string through jsQR`, dec && dec.data === s, dec ? dec.data.slice(0, 30) : "null");
+  }
+  eq("QR is deterministic", T.QR.matrixString(T.QR.encode("x", T.QR.ECL.M)), T.QR.matrixString(T.QR.encode("x", T.QR.ECL.M)));
+  ok("QR.toSVG returns an <svg>", /^<svg[\s\S]+<\/svg>$/.test(T.QR.toSVG(T.QR.encode("x", T.QR.ECL.L))));
+}
+
+/* ---- 7g0d. theme link: strict validators ---- */
+{
+  const C = T.isStrictColor;
+  ok("color: #4d9dff", C("#4d9dff"));
+  ok("color: #abc", C("#abc"));
+  ok("color: #12345678", C("#12345678"));
+  ok("color: rgb(10,20,30)", C("rgb(10,20,30)"));
+  ok("color: rgba(0,0,0,.35)", C("rgba(0,0,0,.35)"));
+  ok("color: hsl(210,50%,40%)", C("hsl(210, 50%, 40%)"));
+  ok("color: named 'blue'", C("blue"));
+  ok("color: 'transparent'", C("transparent"));
+  ok("REJECT color-mix()", !C("color-mix(in srgb, red 50%, blue)"));
+  ok("REJECT var()", !C("var(--x)"));
+  ok("REJECT calc()", !C("calc(1px + 2px)"));
+  ok("REJECT 'red;evil'", !C("red;evil"));
+  ok("REJECT url()", !C("url(https://x/y.png)"));
+  ok("REJECT '#gg'", !C("#gg"));
+  ok("REJECT bare number", !C("123"));
+  ok("REJECT expression()", !C("expression(alert(1))"));
+
+  const SH = T.isStrictShadow;
+  ok("shadow: base midnight", SH("0 8px 30px rgba(0,0,0,.35)"));
+  ok("shadow: base paper", SH("0 8px 24px rgba(20,30,50,.08)"));
+  ok("shadow: monarch 2-layer", SH("0 0 22px rgba(75,180,255,.14), 0 10px 34px rgba(0,0,0,.62)"));
+  ok("shadow: inset", SH("inset 0 0 0 1px rgba(0,0,0,.1)"));
+  ok("REJECT shadow with url()", !SH("0 0 10px url(x)"));
+  ok("REJECT shadow with ;}", !SH("0 0 0 red;}"));
+  ok("REJECT shadow: 6 layers", !SH("0 0 red,0 0 red,0 0 red,0 0 red,0 0 red,0 0 red"));
+
+  ok("length: 20px", T.isStrictLength("20px"));
+  ok("length: 0", T.isStrictLength("0"));
+  ok("REJECT length: 20px;evil", !T.isStrictLength("20px;evil"));
+  ok("REJECT length: calc(1px)", !T.isStrictLength("calc(1px)"));
+}
+
+/* ---- 7g0e. validateSharedTheme: valid + malicious payloads ---- */
+{
+  const good = { v: 1, id: "sunset", name: "Sunset", author: "Nadia", scheme: "dark",
+    tokens: { bg: "#1a0f14", accent: "#ff7a45", text: "#fdeee6", "text-dim": "#c9a99a", shadow: "0 8px 30px rgba(0,0,0,.4)", "r-lg": "12px" }, font: "Rajdhani" };
+  {
+    const r = T.validateSharedTheme(good);
+    ok("valid theme passes", r.ok, r.error);
+    ok("validated theme keeps only known fields", r.ok && !("evil" in r.theme) && r.theme.font === "Rajdhani");
+  }
+  const bad = [
+    ["script in a colour value", { ...good, tokens: { ...good.tokens, accent: "#fff;} body{display:none} .x{" } }],
+    ["external url() in a colour", { ...good, tokens: { ...good.tokens, bg: "url(https://evil.example/x.png)" } }],
+    ["< in the name", { ...good, name: "Pwn</style><script>x" }],
+    ["javascript: in a value", { ...good, tokens: { ...good.tokens, text: "javascript:alert(1)" } }],
+    ["expression() in a value", { ...good, tokens: { ...good.tokens, accent: "expression(alert(1))" } }],
+    ["color-mix() in a value", { ...good, tokens: { ...good.tokens, accent: "color-mix(in srgb,red,blue)" } }],
+    ["unknown top-level key (decorativeCss)", { ...good, decorativeCss: "body{display:none}" }],
+    ["unknown top-level key (fontImports)", { ...good, fontImports: ["https://evil/x.css"] }],
+    ["unknown top-level key (music)", { ...good, music: "https://evil/x.mp3" }],
+    ["unknown token key", { ...good, tokens: { ...good.tokens, hackToken: "#fff" } }],
+    ["font name with markup", { ...good, font: "Rajdhani</style>" }],
+    ["font name path traversal", { ...good, font: "../../etc/passwd" }],
+    ["bad scheme", { ...good, scheme: "auto" }],
+    ["id with spaces", { ...good, id: "My Theme" }],
+    ["id path traversal", { ...good, id: "../etc" }],
+    ["wrong payload version", { ...good, v: 2 }],
+    ["oversized name", { ...good, name: "x".repeat(120) }],
+    ["oversized token value", { ...good, tokens: { ...good.tokens, bg: "#" + "a".repeat(5000) } }],
+    ["empty palette", { ...good, tokens: {} }],
+    ["tokens is an array", { ...good, tokens: ["#fff"] }],
+    ["null", null],
+    ["a bare string", "not a theme"],
+  ];
+  for (const [label, payload] of bad) {
+    const r = T.validateSharedTheme(payload);
+    ok(`REJECT: ${label}`, r && r.ok === false && typeof r.error === "string", JSON.stringify(r));
+  }
+}
+
+/* ---- 7g0f. encode/decode round-trip + decoder robustness ---- */
+{
+  const theme = { v: 1, id: "aurora", name: "Aurora", scheme: "dark",
+    tokens: { bg: "#04121a", accent: "#38e8ff", text: "#e7f6fb", "text-dim": "#9fc4d2" } };
+  const encoded = await T.encodeThemeLink(theme);
+  ok("encoded payload is url-safe", /^[dr][A-Za-z0-9_-]+$/.test(encoded));
+  const back = await T.decodeThemeLink(encoded);
+  const v = T.validateSharedTheme(back);
+  ok("link round-trips: decode + validate", v.ok, v.error);
+  ok("link round-trips: same tokens", v.ok && JSON.stringify(v.theme.tokens) === JSON.stringify(theme.tokens));
+  ok("link round-trips: same name/scheme/id", v.ok && v.theme.name === "Aurora" && v.theme.scheme === "dark" && v.theme.id === "aurora");
+
+  // decoder must fail cleanly on garbage
+  const rej = async (label, payload) => {
+    let threw = null; try { await T.decodeThemeLink(payload); } catch (e) { threw = e; }
+    ok(`decode REJECTS ${label}`, threw instanceof T.ThemeLinkError, threw ? threw.message : "did not throw");
+  };
+  await rej("malformed base64", "d!!!!not base64!!!!");
+  await rej("unknown marker", "z" + T.b64urlEncodeBytes(new TextEncoder().encode("{}")));
+  await rej("non-JSON body", "r" + T.b64urlEncodeBytes(new TextEncoder().encode("<<<not json>>>")));
+  await rej("oversized payload string", "r" + "A".repeat(T.THEME_LINK.MAX_LINK_CHARS + 10));
+  await rej("empty", "");
+
+  // an oversized-but-valid-base64 raw JSON blob -> rejected on decoded byte size
+  const huge = "r" + T.b64urlEncodeBytes(new TextEncoder().encode(JSON.stringify({ v: 1, pad: "x".repeat(6000) })));
+  await rej("oversized decoded JSON", huge);
+}
+
+/* ---- 7g0g. serialize current theme + build link ---- */
+{
+  const p = T.serializeThemeForShare("monarch");
+  eq("serialize monarch: 16 tokens", Object.keys(p.tokens).length, 16);
+  eq("serialize monarch: font", p.font, "Orbitron");
+  ok("serialize monarch: passes its own validator", T.validateSharedTheme(p).ok);
+  const link = await T.buildShareLink("midnight");
+  ok("buildShareLink returns a #theme= fragment url", /\/rial-app\/#theme=[dr][A-Za-z0-9_-]+$/.test(link.url));
+  ok("buildShareLink round-trips", (await T.decodeThemeLink(link.encoded)).id === "midnight");
+}
+
+/* ---- 7g0h. user-theme registry (rebuildThemeReg) ---- */
+{
+  const before = T.THEME_IDS.length;
+  S.settings.userThemes = [
+    { v: 1, id: "friendtheme", name: "Friend's", scheme: "dark", tokens: { bg: "#101018", accent: "#c0ffee" } },
+    { v: 1, id: "midnight", name: "Evil Override", scheme: "dark", tokens: { bg: "#000000" } },  // tries to shadow built-in
+    { v: 1, id: "broken", name: "Bad", scheme: "dark", tokens: { accent: "url(x)" } },           // invalid -> dropped
+  ];
+  T.rebuildThemeReg();
+  ok("valid user theme joins the registry", !!T.THEME_REG.friendtheme && T.THEME_REG.friendtheme.custom === true);
+  ok("user theme CANNOT shadow a built-in", T.THEME_REG.midnight.name === "Midnight");
+  ok("invalid user theme is dropped from the registry", !T.THEME_REG.broken);
+  ok("invalid user theme is pruned from storage", S.settings.userThemes.every(t => t.id !== "broken"));
+  ok("built-in id in userThemes is pruned too", S.settings.userThemes.every(t => t.id !== "midnight"));
+  eq("THEME_IDS grew by exactly 1", T.THEME_IDS.length, before + 1);
+  ok("themeName resolves a user theme", T.themeName("friendtheme") === "Friend's");
+  ok("isBuiltInTheme: friendtheme false, midnight true", !T.isBuiltInTheme("friendtheme") && T.isBuiltInTheme("midnight"));
+  S.settings.userThemes = []; T.rebuildThemeReg();
 }
 
 /* ---- 7g. theme auto-scheduler ---- */

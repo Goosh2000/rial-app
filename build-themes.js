@@ -91,14 +91,23 @@ const themes = files.map((f) => {
   if (cText != null && cText < 4.5) die(`${f}: text vs bg contrast ${cText.toFixed(2)}:1 < 4.5:1`);
   if (cDim != null && cDim < 3) die(`${f}: text-dim vs bg contrast ${cDim.toFixed(2)}:1 < 3:1`);
 
-  const font = { heading: null, imports: [], ...(base.font || {}), ...(t.font || {}) };
+  const font = { family: null, heading: null, imports: [], ...(base.font || {}), ...(t.font || {}) };
   if (font.imports && !Array.isArray(font.imports)) die(`${f}: font.imports must be an array`);
   for (const u of (font.imports || [])) if (!/^https:\/\//.test(u)) die(`${f}: font import must be https — ${u}`);
+  if (font.family != null && !/^[A-Za-z0-9][A-Za-z0-9 -]{0,39}$/.test(font.family))
+    die(`${f}: font.family must be a plain family name (letters, digits, spaces, hyphens)`);
+  // font.family is the canonical single name (drives link-sharing). If heading / imports
+  // aren't given explicitly, derive them from the family.
+  const googleFontUrl = (fam) =>
+    "https://fonts.googleapis.com/css2?family=" + encodeURIComponent(fam).replace(/%20/g, "+") + ":wght@400;600;700&display=swap";
+  const fontHeading = font.heading || (font.family ? `"${font.family}", "SF Pro Display", system-ui, sans-serif` : null);
+  const fontImports = (font.imports && font.imports.length) ? font.imports : (font.family ? [googleFontUrl(font.family)] : []);
 
   return {
     id, name: t.name, scheme: t.scheme, tokens,
-    fontHeading: font.heading || null,
-    fontImports: font.imports || [],
+    fontFamily: font.family || null,
+    fontHeading,
+    fontImports,
     decorativeCss: typeof t.decorativeCss === "string" ? t.decorativeCss : "",
     contrast: { text: cText && +cText.toFixed(2), dim: cDim && +cDim.toFixed(2) },
   };
@@ -130,12 +139,16 @@ const ordered = [def, ...themes.filter((t) => t.id !== DEFAULT_ID)];
 const registry = {};
 for (const t of ordered) registry[t.id] = {
   id: t.id, name: t.name, scheme: t.scheme,
-  bg: t.tokens.bg, fontImports: t.fontImports,
+  bg: t.tokens.bg,
+  tokens: t.tokens,                 // full resolved 16-token palette (for link sharing)
+  fontFamily: t.fontFamily,
+  fontImports: t.fontImports,
 };
 const js =
   `/* generated from themes/*.theme.json by build-themes.js — do not edit here */\n` +
   `const THEMES = ${JSON.stringify(registry, null, 2)};\n` +
-  `const THEME_DEFAULT = ${JSON.stringify(DEFAULT_ID)};`;
+  `const THEME_DEFAULT = ${JSON.stringify(DEFAULT_ID)};\n` +
+  `const THEME_TOKEN_KEYS = ${JSON.stringify(TOKEN_KEYS)};`;
 
 /* ---- splice into index.html ---- */
 function splice(src, startMark, endMark, payload, label) {

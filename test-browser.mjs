@@ -258,6 +258,62 @@ const failedRequests = [];
   await page.evaluate(async () => { closeFull(); await saveSchedule({ mode: "off" }); S.settings.themeManual = null; applyTheme("midnight"); });
   await new Promise((r) => setTimeout(r, 350));
 
+  // ---- theme link sharing: QR renders + a real scanner decodes it ----
+  await page.evaluate(() => applyTheme("monarch"));
+  const jsQRsrc = fs.readFileSync(path.join(__dir, "node_modules", "jsqr", "dist", "jsQR.js"), "utf8");
+  await page.evaluate(jsQRsrc);   // expose window.jsQR
+  const qrResult = await page.evaluate(async () => {
+    const link = await buildShareLink("monarch");
+    await showThemeQr();
+    await new Promise((r) => setTimeout(r, 150));
+    const svg = document.querySelector("#full svg");
+    if (!svg) return { rendered: false, link: link.url };
+    // rasterise the SVG to a canvas and scan it
+    const xml = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = "data:image/svg+xml;base64," + btoa(xml); });
+    const S = 8;               // px per QR module — generous for the scanner
+    const cv = document.createElement("canvas");
+    const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+    cv.width = vb[2] * S; cv.height = vb[3] * S;
+    const cx = cv.getContext("2d");
+    cx.fillStyle = "#fff"; cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(img, 0, 0, cv.width, cv.height);
+    const id = cx.getImageData(0, 0, cv.width, cv.height);
+    const dec = window.jsQR(id.data, cv.width, cv.height);
+    return { rendered: true, link: link.url, decoded: dec ? dec.data : null };
+  });
+  ok("Show QR renders an <svg> QR code", qrResult.rendered);
+  ok("a real QR scanner decodes the share link from the rendered QR", qrResult.decoded === qrResult.link,
+     `decoded=${(qrResult.decoded || "null").slice(0, 50)}`);
+  await page.screenshot({ path: path.join(__dir, "screenshot-theme-share.png") });
+  await page.evaluate(() => closeFull());
+
+  // ---- import flow via the real #theme= fragment + full reload (never auto-applies) ----
+  const shareUrl = qrResult.link;
+  await page.goto("about:blank");
+  await page.goto(shareUrl, { waitUntil: "networkidle0" });
+  await new Promise((r) => setTimeout(r, 1600));   // boot + queued preview
+  const imp = await page.evaluate(async () => ({
+    fragmentCleared: !/theme=/.test(location.hash),
+    previewShown: !!document.getElementById("tiImport"),
+    theme: document.documentElement.getAttribute("data-theme"),
+    stored: (await DB.meta("userThemes", [])).length,
+  }));
+  ok("opening a #theme= link clears the fragment", imp.fragmentCleared);
+  ok("opening a #theme= link shows the preview (not auto-applied)", imp.previewShown && imp.theme !== "monarch-shared" && imp.stored === 0, JSON.stringify(imp));
+  await page.screenshot({ path: path.join(__dir, "screenshot-theme-import.png") });
+  const imported = await page.evaluate(async () => {
+    document.getElementById("tiImport").click();
+    await new Promise((r) => setTimeout(r, 500));
+    return { theme: document.documentElement.getAttribute("data-theme"),
+             stored: (await DB.meta("userThemes", [])).length };
+  });
+  ok("clicking Import stores + applies the shared theme", imported.stored === 1 && imported.theme === "monarch-shared", JSON.stringify(imported));
+  await page.evaluate(async () => { await DB.setMeta("userThemes", []); location.hash = ""; });
+  await page.goto(base + "/index.html", { waitUntil: "networkidle0" });
+  await new Promise((r) => setTimeout(r, 600));
+
   // ---- service worker ----
   const sw = await page.evaluate(async () => {
     if (!("serviceWorker" in navigator)) return { supported: false };

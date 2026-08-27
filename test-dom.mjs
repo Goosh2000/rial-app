@@ -34,6 +34,14 @@ const dom = new JSDOM(html, {
 const win = dom.window, doc = win.document;
 win.URL.createObjectURL = () => "blob:stub";
 win.URL.revokeObjectURL = () => {};
+// jsdom lacks these — provide the Node globals so the theme-link + font paths run
+if (!win.matchMedia) win.matchMedia = (q) => ({ matches: false, media: q, addEventListener() {}, addListener() {}, removeEventListener() {} });
+if (typeof CompressionStream === "function" && !win.CompressionStream) win.CompressionStream = CompressionStream;
+if (typeof DecompressionStream === "function" && !win.DecompressionStream) win.DecompressionStream = DecompressionStream;
+if (!win.btoa) win.btoa = (s) => Buffer.from(s, "binary").toString("base64");
+if (!win.atob) win.atob = (s) => Buffer.from(s, "base64").toString("binary");
+if (!win.TextEncoder) win.TextEncoder = TextEncoder;
+if (!win.TextDecoder) win.TextDecoder = TextDecoder;
 
 const $ = (s) => doc.querySelector(s);
 const $$ = (s) => [...doc.querySelectorAll(s)];
@@ -286,6 +294,83 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   win.eval("resumeSchedule()"); await sleep(200);
   win.eval("saveSchedule({mode:'off'}); closeFull()"); await sleep(360);
 
+  // --- Theme link sharing: round-trip through the import flow ---
+  win.eval('applyThemeSmooth("monarch")'); await sleep(320);
+  const link = await win.eval("buildShareLink('monarch')");
+  ok("buildShareLink produces a #theme= fragment", /#theme=[dr][A-Za-z0-9_-]+$/.test(link.url), link.url.slice(0, 60));
+
+  // simulate opening the link on another device: decode -> validate -> preview (NEVER auto-apply)
+  win.eval('applyThemeSmooth("paper")'); await sleep(320);
+  win.eval(`(async () => {
+    const obj = await decodeThemeLink(${JSON.stringify(link.encoded)});
+    const v = validateSharedTheme(obj);
+    window.__v = v;
+    if (v.ok) openThemeImportPreview(v.theme);
+  })()`);
+  await until(() => $("#tiImport"), "import preview shown");
+  ok("shared link decodes + validates", win.eval("window.__v && window.__v.ok === true"));
+  ok("import preview does NOT auto-apply the theme", doc.documentElement.getAttribute("data-theme") === "paper");
+  ok("import preview names the audio-stripping", /Audio is not included/i.test($("#full").textContent));
+  ok("import preview notes custom effects are stripped", /(Custom effects|not included).*palette/is.test($("#full").textContent));
+  ok("import preview offers Import + Cancel", !!$("#tiImport") && !!$("#tiCancel2"));
+
+  const txThemesBefore = JSON.parse(win.localStorage.getItem("rial:meta:userThemes") || "[]").length;
+  click($("#tiImport"));
+  await until(() => JSON.parse(win.localStorage.getItem("rial:meta:userThemes") || "[]").length === txThemesBefore + 1, "user theme stored");
+  await until(() => doc.documentElement.getAttribute("data-theme") === "monarch-shared", "imported theme applied (crossfade)");
+  {
+    const stored = JSON.parse(win.localStorage.getItem("rial:meta:userThemes"))[0];
+    ok("imported theme stored with a non-built-in id", stored.id === "monarch-shared");
+    ok("imported theme applied after Import", doc.documentElement.getAttribute("data-theme") === "monarch-shared");
+    ok("imported theme injects palette CSS", /data-theme="monarch-shared"/.test(win.eval('document.getElementById("userThemeCss").textContent')));
+    ok("imported theme CSS carries validated tokens", /--accent:\s*#4d9dff/.test(win.eval('document.getElementById("userThemeCss").textContent')));
+  }
+
+  // it shows in settings and is deletable; built-ins are not
+  win.eval('openOverlay("settings")'); await until(() => $("#full.open [data-theme-set]"), "settings");
+  ok("imported theme appears as a chip", [...$$("[data-theme-set]")].some(b => b.dataset.themeSet === "monarch-shared"));
+  ok("imported theme has a Delete button", [...$$("[data-act='del-user-theme']")].length === 1);
+  click($("[data-act='del-user-theme']"));
+  await until(() => JSON.parse(win.localStorage.getItem("rial:meta:userThemes") || "[]").length === 0, "user theme deleted");
+  await until(() => ["midnight", "paper", "desert", "depth"].includes(doc.documentElement.getAttribute("data-theme")), "fell back to a built-in");
+  ok("deleting the active user theme falls back to a built-in", ["midnight", "paper", "desert", "depth"].includes(doc.documentElement.getAttribute("data-theme")));
+  ok("deleted theme's chip is gone", ![...$$("[data-theme-set]")].some(b => b.dataset.themeSet === "monarch-shared"));
+  win.eval("closeFull()"); await sleep(200);
+
+  // --- malicious links leave the app completely untouched ---
+  win.eval('applyThemeSmooth("desert")'); await sleep(320);
+  const beforeState = () => ({
+    theme: doc.documentElement.getAttribute("data-theme"),
+    userThemes: win.localStorage.getItem("rial:meta:userThemes"),
+  });
+  const snap0 = JSON.stringify(beforeState());
+  const evil = [
+    ["script in a colour", { v: 1, id: "x", name: "X", scheme: "dark", tokens: { accent: "#fff;}body{display:none}.y{" } }],
+    ["external url()", { v: 1, id: "x", name: "X", scheme: "dark", tokens: { bg: "url(https://evil/x.png)" } }],
+    ["<script> in name", { v: 1, id: "x", name: "P</style><script>1", scheme: "dark", tokens: { bg: "#111" } }],
+    ["decorativeCss field", { v: 1, id: "x", name: "X", scheme: "dark", tokens: { bg: "#111" }, decorativeCss: "body{}" }],
+    ["fontImports field", { v: 1, id: "x", name: "X", scheme: "dark", tokens: { bg: "#111" }, fontImports: ["https://e/x"] }],
+  ];
+  for (const [label, payload] of evil) {
+    const enc = await win.eval(`encodeThemeLink(${JSON.stringify(payload)})`);
+    win.location.hash = "#theme=" + enc;
+    win.eval("(async () => { await handleThemeLinkFragment(); })()");
+    await sleep(200);
+    ok(`malicious link rejected (${label}): no preview shown`, !$("#tiImport"));
+    ok(`malicious link rejected (${label}): app state unchanged`, JSON.stringify(beforeState()) === snap0, JSON.stringify(beforeState()));
+    ok(`malicious link rejected (${label}): fragment cleared`, !/theme=/.test(win.location.hash));
+  }
+  // oversized blob
+  win.location.hash = "#theme=r" + "A".repeat(3000);
+  win.eval("(async () => { await handleThemeLinkFragment(); })()");
+  await sleep(200);
+  ok("oversized link rejected, app untouched", JSON.stringify(beforeState()) === snap0 && !$("#tiImport"));
+  // malformed base64
+  win.location.hash = "#theme=d!!!not-valid!!!";
+  win.eval("(async () => { await handleThemeLinkFragment(); })()");
+  await sleep(200);
+  ok("malformed base64 link rejected, app untouched", JSON.stringify(beforeState()) === snap0);
+
   // Export backup builds valid JSON (stub blob)
   let exported = null;
   win.Blob = class { constructor(parts){ exported = parts[0]; } };
@@ -294,6 +379,7 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   const dump = JSON.parse(exported);
   ok("export JSON is a Rial backup", dump.app === "rial" && dump.data.transactions.length >= 4 && dump.meta.monthlyIncome === 900000);
   ok("export includes theme schedule state", "themeSchedule" in dump.meta && "themeManual" in dump.meta);
+  ok("export includes userThemes", "userThemes" in dump.meta);
 
   ok("no jsdom errors accumulated", errors.length === 0, errors.slice(0, 3).join(" | "));
 

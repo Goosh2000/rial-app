@@ -12,6 +12,7 @@
   "type": "commonjs",
   "devDependencies": {
     "jsdom": "^25.0.1",
+    "jsqr": "^1.4.0",
     "puppeteer-core": "^23.11.1"
   },
   "comment": "test-browser.mjs auto-detects an installed Chrome/Edge; if neither is present it skips."

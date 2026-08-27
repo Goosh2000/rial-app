@@ -533,7 +533,7 @@ const DB = (() => {
       for (const s of STORES) out.data[s] = await api.getAll(s);
       const keys = ["settings","theme","csvMapping","smsPatterns","lastBackup","onboarded",
                     "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","icsExportedAt",
-                    "themeSchedule","themeManual"];
+                    "themeSchedule","themeManual","userThemes"];
       for (const k of keys) out.meta[k] = await api.meta(k);
       return out;
     },
@@ -614,7 +614,9 @@ async function refresh(){
     preferredEnvelopes: await DB.meta("preferredEnvelopes", null),
     themeSchedule: await DB.meta("themeSchedule", { mode:"off", base:"midnight", windows:[], systemLight:"paper", systemDark:"midnight" }),
     themeManual: await DB.meta("themeManual", null),
+    userThemes: await DB.meta("userThemes", []),
   };
+  if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
 const catByName = (n) => S.cats.find(c => c.name === n);
 const catFor = (t) => catByName(t.category) || { icon:"•", color:"var(--text-faint)", name:t.category||"Other" };
@@ -1238,6 +1240,9 @@ function handleAct(act, d){
     "open-wrapped": () => openWrapped(prevMonthKey()),
     "edit-cats": () => openOverlay("cats"),
     "edit-sms": () => openOverlay("smsPatterns"),
+    "share-theme-link": copyShareLink,
+    "share-theme-qr": showThemeQr,
+    "del-user-theme": () => deleteUserTheme(d.id),
   };
   (map[act] || (() => toast("?" + act)))();
 }
@@ -2346,7 +2351,18 @@ function settingsHTML(){
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">Theme</h3>
     <div class="scroll-x">
-      ${THEME_IDS.map(k => `<button class="chip" data-theme-set="${k}" aria-pressed="${s.theme===k}">${themeName(k)}</button>`).join("")}
+      ${THEME_IDS.map(k => `<button class="chip" data-theme-set="${k}" aria-pressed="${s.theme===k}">${themeName(k)}${(THEME_REG[k]||{}).custom?" ·":""}</button>`).join("")}
+    </div>
+    ${(s.userThemes||[]).length ? `<div style="margin-top:10px">
+      <div class="tiny faint" style="margin-bottom:6px">Imported themes</div>
+      ${(s.userThemes||[]).map(ut => `<div class="row between" style="padding:4px 0">
+        <span class="tiny">${themeName(ut.id)}${ut.author?` · ${esc(ut.author)}`:""}</span>
+        <button class="btn sm ghost danger" data-act="del-user-theme" data-id="${esc(ut.id)}">Delete</button>
+      </div>`).join("")}
+    </div>` : ""}
+    <div class="row" style="gap:8px;margin-top:12px">
+      <button class="btn sm" data-act="share-theme-link">Copy share link</button>
+      <button class="btn sm" data-act="share-theme-qr">Show QR</button>
     </div>
     ${scheduleHTML()}
   </div>
@@ -2501,6 +2517,325 @@ async function doExport(){
   toast("Backup exported");
 }
 
+/* ============ [QR] byte-mode QR encoder ========================== *
+ * Condensed from Project Nayuki's QR Code generator (public domain,
+ * https://www.nayuki.io/page/qr-code-generator-library). Byte mode only.
+ * QR.encode(text, minEcl) -> { size, modules:boolean[][] }
+ * QR.toSVG(qr, opts) -> string     QR.matrixString(qr) -> string (tests)
+ * ----------------------------------------------------------------- */
+const QR = (() => {
+  const ECL = { L:0, M:1, Q:2, H:3 };
+  const FORMAT_BITS = [1, 0, 3, 2];             // index by ECL -> format bits
+  const ECC_CW_PER_BLOCK = [
+    [-1,7,10,15,20,26,18,20,24,30,18,20,24,26,30,22,24,28,30,28,28,28,28,30,30,26,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],
+    [-1,10,16,26,18,24,16,18,22,22,26,30,22,22,24,24,28,28,26,26,26,26,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28],
+    [-1,13,22,18,26,18,24,18,22,20,24,28,26,24,20,30,24,28,28,26,30,28,30,30,30,30,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],
+    [-1,17,28,22,16,22,28,26,26,24,28,24,28,22,24,24,30,28,28,26,28,30,24,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30],
+  ];
+  const NUM_ECC_BLOCKS = [
+    [-1,1,1,1,1,1,2,2,2,2,4,4,4,4,4,6,6,6,6,7,8,8,9,9,10,12,12,12,13,14,15,16,17,18,19,19,20,21,22,24,25],
+    [-1,1,1,1,2,2,4,4,4,5,5,5,8,9,9,10,10,11,13,14,16,17,17,18,20,21,23,25,26,28,29,31,33,35,37,38,40,43,45,47,49],
+    [-1,1,1,2,2,4,4,6,6,8,8,8,10,12,16,12,17,16,18,21,20,23,23,25,27,29,34,34,35,38,40,43,45,48,51,53,56,59,62,65,68],
+    [-1,1,1,2,4,4,4,5,6,8,8,11,11,16,16,18,16,19,21,25,25,25,34,30,32,35,37,40,42,45,48,51,54,57,60,63,66,70,74,77,81],
+  ];
+
+  // GF(256) tables (primitive poly 0x11D)
+  const EXP = new Uint8Array(256), LOG = new Uint8Array(256);
+  for (let i = 0, x = 1; i < 255; i++){ EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11D; }
+  const gfMul = (a, b) => (a === 0 || b === 0) ? 0 : EXP[(LOG[a] + LOG[b]) % 255];
+
+  // Reed-Solomon divisor of length `degree` (nayuki's reedSolomonComputeDivisor)
+  function rsDivisor(degree){
+    const result = new Array(degree).fill(0);
+    result[degree - 1] = 1;
+    let root = 1;
+    for (let i = 0; i < degree; i++){
+      for (let j = 0; j < result.length; j++){
+        result[j] = gfMul(result[j], root);
+        if (j + 1 < result.length) result[j] ^= result[j + 1];
+      }
+      root = gfMul(root, 0x02);
+    }
+    return result;
+  }
+  function rsRemainder(data, divisor){
+    const result = divisor.map(() => 0);
+    for (const b of data){
+      const factor = b ^ result.shift();
+      result.push(0);
+      divisor.forEach((coef, i) => { result[i] ^= gfMul(coef, factor); });
+    }
+    return result;
+  }
+
+  const numRawDataModules = (ver) => {
+    let result = (16 * ver + 128) * ver + 64;
+    if (ver >= 2){
+      const numAlign = Math.floor(ver / 7) + 2;
+      result -= (25 * numAlign - 10) * numAlign - 55;
+      if (ver >= 7) result -= 36;
+    }
+    return result;
+  };
+  const numDataCodewords = (ver, ecl) =>
+    Math.floor(numRawDataModules(ver) / 8)
+    - ECC_CW_PER_BLOCK[ecl][ver] * NUM_ECC_BLOCKS[ecl][ver];
+
+  function alignPatternPositions(ver){
+    if (ver === 1) return [];
+    const num = Math.floor(ver / 7) + 2;
+    const step = ver === 32 ? 26 : Math.ceil((ver * 4 + 4) / (num * 2 - 2)) * 2;
+    const size = ver * 4 + 17;
+    const result = [6];
+    for (let pos = size - 7; result.length < num; pos -= step) result.splice(1, 0, pos);
+    return result;
+  }
+
+  function encode(text, minEcl){
+    const data = typeof text === "string" ? Array.from(new TextEncoder().encode(text)) : Array.from(text);
+    let ecl = minEcl == null ? ECL.L : minEcl;
+
+    // pick smallest version that fits at the chosen ECL
+    let version = -1, dataCapacityBits = 0;
+    for (let v = 1; v <= 40; v++){
+      const cap = numDataCodewords(v, ecl) * 8;
+      const charCountBits = v <= 9 ? 8 : 16;
+      const need = 4 + charCountBits + data.length * 8;
+      if (need <= cap){ version = v; dataCapacityBits = cap; break; }
+    }
+    if (version === -1) throw new Error("Data too long for a QR code");
+
+    // boost ECL for free if data still fits
+    for (const e of [ECL.M, ECL.Q, ECL.H]){
+      const charCountBits = version <= 9 ? 8 : 16;
+      if (4 + charCountBits + data.length * 8 <= numDataCodewords(version, e) * 8) ecl = e;
+    }
+
+    // build bit buffer
+    const bits = [];
+    const push = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+    push(4, 4);                                    // byte mode
+    push(data.length, version <= 9 ? 8 : 16);
+    for (const b of data) push(b, 8);
+    const capacityBits = numDataCodewords(version, ecl) * 8;
+    push(0, Math.min(4, capacityBits - bits.length));
+    while (bits.length % 8 !== 0) bits.push(0);
+    for (let pad = 0xEC; bits.length < capacityBits; pad ^= 0xEC ^ 0x11) push(pad, 8);
+
+    // bytes -> codewords
+    const dataCodewords = [];
+    for (let i = 0; i < bits.length; i += 8){
+      let b = 0; for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+      dataCodewords.push(b);
+    }
+
+    // interleave with Reed-Solomon ECC
+    const numBlocks = NUM_ECC_BLOCKS[ecl][version];
+    const eccLen = ECC_CW_PER_BLOCK[ecl][version];
+    const rawCw = Math.floor(numRawDataModules(version) / 8);
+    const numShortBlocks = numBlocks - rawCw % numBlocks;
+    const shortLen = Math.floor(rawCw / numBlocks) - eccLen;
+    const div = rsDivisor(eccLen);
+    const blocks = [];
+    for (let i = 0, k = 0; i < numBlocks; i++){
+      const datLen = shortLen + (i < numShortBlocks ? 0 : 1);
+      const dat = dataCodewords.slice(k, k + datLen); k += datLen;
+      const ecc = rsRemainder(dat, div);
+      if (i < numShortBlocks) dat.push(0);
+      blocks.push(dat.concat(ecc));
+    }
+    const finalCw = [];
+    for (let i = 0; i < blocks[0].length; i++){
+      for (let j = 0; j < blocks.length; j++){
+        if (i !== shortLen || j >= numShortBlocks) finalCw.push(blocks[j][i]);
+      }
+    }
+
+    // ---- draw the matrix ----
+    const size = version * 4 + 17;
+    const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+    const isFunc = Array.from({ length: size }, () => new Array(size).fill(false));
+    const setFunc = (x, y, dark) => { modules[y][x] = dark; isFunc[y][x] = true; };
+
+    // timing patterns first (finders overwrite the ends)
+    for (let i = 0; i < size; i++){ setFunc(6, i, i % 2 === 0); setFunc(i, 6, i % 2 === 0); }
+
+    // finder patterns
+    const drawFinder = (cx, cy) => {
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++){
+        const xx = cx + dx, yy = cy + dy;
+        if (xx < 0 || xx >= size || yy < 0 || yy >= size) continue;
+        const dist = Math.max(Math.abs(dx), Math.abs(dy));
+        setFunc(xx, yy, dist !== 2 && dist !== 4);
+      }
+    };
+    drawFinder(3, 3); drawFinder(size - 4, 3); drawFinder(3, size - 4);
+
+    // alignment patterns
+    const align = alignPatternPositions(version);
+    for (let i = 0; i < align.length; i++) for (let j = 0; j < align.length; j++){
+      if ((i === 0 && j === 0) || (i === 0 && j === align.length - 1) || (i === align.length - 1 && j === 0)) continue;
+      const cx = align[i], cy = align[j];
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++)
+        setFunc(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }
+
+    // reserve format + version areas (filled after masking)
+    const reserveFormat = () => {
+      for (let i = 0; i < 9; i++){ setFunc(i, 8, false); setFunc(8, i, false); }
+      for (let i = 0; i < 8; i++){ setFunc(size - 1 - i, 8, false); setFunc(8, size - 1 - i, false); }
+      setFunc(8, size - 8, true);   // always-dark module
+    };
+    reserveFormat();
+    if (version >= 7){
+      for (let i = 0; i < 18; i++){
+        const a = size - 11 + (i % 3), b = Math.floor(i / 3);
+        setFunc(a, b, false); setFunc(b, a, false);
+      }
+    }
+
+    // place data with zigzag
+    let bitIdx = 0;
+    const allBits = [];
+    for (const cw of finalCw) for (let i = 7; i >= 0; i--) allBits.push((cw >>> i) & 1);
+    for (let right = size - 1; right >= 1; right -= 2){
+      if (right === 6) right = 5;
+      for (let vert = 0; vert < size; vert++){
+        for (let k = 0; k < 2; k++){
+          const x = right - k;
+          const upward = ((right + 1) & 2) === 0;
+          const y = upward ? size - 1 - vert : vert;
+          if (isFunc[y][x] || bitIdx >= allBits.length) continue;
+          modules[y][x] = allBits[bitIdx++] === 1;
+        }
+      }
+    }
+
+    // masking: try all 8, score, keep best
+    const applyMask = (mask, m) => {
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++){
+        if (isFunc[y][x]) continue;
+        let invert = false;
+        switch (mask){
+          case 0: invert = (x + y) % 2 === 0; break;
+          case 1: invert = y % 2 === 0; break;
+          case 2: invert = x % 3 === 0; break;
+          case 3: invert = (x + y) % 3 === 0; break;
+          case 4: invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0; break;
+          case 5: invert = (x * y) % 2 + (x * y) % 3 === 0; break;
+          case 6: invert = ((x * y) % 2 + (x * y) % 3) % 2 === 0; break;
+          case 7: invert = ((x + y) % 2 + (x * y) % 3) % 2 === 0; break;
+        }
+        if (invert) m[y][x] = !m[y][x];
+      }
+    };
+    // m[row][col]; nayuki's setFunctionModule(col, row) -> m[row][col]
+    const drawFormat = (mask, m) => {
+      const data = FORMAT_BITS[ecl] << 3 | mask;
+      let rem = data;
+      for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+      const full = ((data << 10) | rem) ^ 0x5412;
+      const gb = (i) => ((full >>> i) & 1) !== 0;
+      for (let i = 0; i <= 5; i++) m[i][8] = gb(i);
+      m[7][8] = gb(6);
+      m[8][8] = gb(7);
+      m[8][7] = gb(8);
+      for (let i = 9; i < 15; i++) m[8][14 - i] = gb(i);
+      for (let i = 0; i < 8; i++) m[8][size - 1 - i] = gb(i);
+      for (let i = 8; i < 15; i++) m[size - 15 + i][8] = gb(i);
+      m[size - 8][8] = true;
+    };
+    const drawVersion = (m) => {
+      if (version < 7) return;
+      let rem = version;
+      for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+      const full = (version << 12) | rem;
+      for (let i = 0; i < 18; i++){
+        const bit = ((full >>> i) & 1) !== 0;
+        const a = size - 11 + (i % 3), b = Math.floor(i / 3);
+        m[b][a] = bit; m[a][b] = bit;
+      }
+    };
+    const penalty = (m) => {
+      let score = 0;
+      // rule 1: runs of 5+
+      for (let y = 0; y < size; y++){
+        let runColor = m[y][0], runLen = 1;
+        for (let x = 1; x < size; x++){
+          if (m[y][x] === runColor){ runLen++; if (runLen === 5) score += 3; else if (runLen > 5) score++; }
+          else { runColor = m[y][x]; runLen = 1; }
+        }
+      }
+      for (let x = 0; x < size; x++){
+        let runColor = m[0][x], runLen = 1;
+        for (let y = 1; y < size; y++){
+          if (m[y][x] === runColor){ runLen++; if (runLen === 5) score += 3; else if (runLen > 5) score++; }
+          else { runColor = m[y][x]; runLen = 1; }
+        }
+      }
+      // rule 2: 2x2 blocks
+      for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++){
+        const c = m[y][x];
+        if (c === m[y][x + 1] && c === m[y + 1][x] && c === m[y + 1][x + 1]) score += 3;
+      }
+      // rule 3: finder-like patterns
+      const pat = [true,false,true,true,true,false,true];
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++){
+        // horizontal
+        if (x + 7 <= size){
+          let ok = true; for (let i = 0; i < 7; i++) if (m[y][x + i] !== pat[i]){ ok = false; break; }
+          if (ok){
+            const before = x >= 4 && !m[y][x-1] && !m[y][x-2] && !m[y][x-3] && !m[y][x-4];
+            const after = x + 10 <= size && !m[y][x+7] && !m[y][x+8] && !m[y][x+9];
+            if (before || after) score += 40;
+          }
+        }
+        if (y + 7 <= size){
+          let ok = true; for (let i = 0; i < 7; i++) if (m[y + i][x] !== pat[i]){ ok = false; break; }
+          if (ok){
+            const before = y >= 4 && !m[y-1][x] && !m[y-2][x] && !m[y-3][x] && !m[y-4][x];
+            const after = y + 10 <= size && !m[y+7][x] && !m[y+8][x] && !m[y+9][x];
+            if (before || after) score += 40;
+          }
+        }
+      }
+      // rule 4: dark ratio
+      let dark = 0;
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (m[y][x]) dark++;
+      const total = size * size;
+      const k = Math.floor(Math.abs(dark * 20 - total * 10) / total);
+      score += k * 10;
+      return score;
+    };
+
+    let bestMask = 0, bestScore = Infinity, bestMatrix = null;
+    for (let mask = 0; mask < 8; mask++){
+      const m = modules.map(row => row.slice());
+      applyMask(mask, m);
+      drawFormat(mask, m);
+      drawVersion(m);
+      const s = penalty(m);
+      if (s < bestScore){ bestScore = s; bestMask = mask; bestMatrix = m; }
+    }
+    return { size, version, ecl, mask: bestMask, modules: bestMatrix };
+  }
+
+  function toSVG(qr, opts = {}){
+    const border = opts.border == null ? 4 : opts.border;
+    const light = opts.light || "#ffffff", dark = opts.dark || "#000000";
+    const dim = qr.size + border * 2;
+    let path = "";
+    for (let y = 0; y < qr.size; y++) for (let x = 0; x < qr.size; x++)
+      if (qr.modules[y][x]) path += `M${x + border},${y + border}h1v1h-1z`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges" style="width:100%;height:auto;background:${light}">` +
+      `<path d="${path}" fill="${dark}"/></svg>`;
+  }
+  function matrixString(qr){
+    return qr.modules.map(row => row.map(c => c ? "#" : ".").join("")).join("\n");
+  }
+  return { encode, toSVG, matrixString, ECL };
+})();
+
 /* ============ THEME ENGINE + AUTO-SCHEDULER ======================== *
  * Themes are compiled from themes/*.theme.json by build-themes.js into the
  * generated regions below. To add a theme: add themes/<id>.theme.json, run
@@ -2514,6 +2849,25 @@ const THEMES = {
     "name": "Midnight",
     "scheme": "dark",
     "bg": "#0b0d10",
+    "tokens": {
+      "bg": "#0b0d10",
+      "bg-elev": "#14171c",
+      "bg-elev-2": "#1c2027",
+      "line": "#262b33",
+      "text": "#f4f6f8",
+      "text-dim": "#9aa4b0",
+      "text-faint": "#5f6773",
+      "accent": "#4f8cff",
+      "accent-ink": "#ffffff",
+      "pos": "#3ddc91",
+      "neg": "#ff6b6b",
+      "warn": "#ffc266",
+      "shadow": "0 8px 30px rgba(0,0,0,.35)",
+      "r-lg": "20px",
+      "r-md": "14px",
+      "r-sm": "10px"
+    },
+    "fontFamily": null,
     "fontImports": []
   },
   "depth": {
@@ -2521,6 +2875,25 @@ const THEMES = {
     "name": "Depth",
     "scheme": "dark",
     "bg": "#070f1c",
+    "tokens": {
+      "bg": "#070f1c",
+      "bg-elev": "#0e1a2e",
+      "bg-elev-2": "#152540",
+      "line": "#1e3355",
+      "text": "#eaf1fb",
+      "text-dim": "#93a7c4",
+      "text-faint": "#5b7091",
+      "accent": "#5bd6ff",
+      "accent-ink": "#04121f",
+      "pos": "#4fe0b0",
+      "neg": "#ff7a8a",
+      "warn": "#ffd06b",
+      "shadow": "0 10px 34px rgba(0,0,0,.5)",
+      "r-lg": "20px",
+      "r-md": "14px",
+      "r-sm": "10px"
+    },
+    "fontFamily": null,
     "fontImports": []
   },
   "desert": {
@@ -2528,6 +2901,25 @@ const THEMES = {
     "name": "Desert",
     "scheme": "dark",
     "bg": "#1c1610",
+    "tokens": {
+      "bg": "#1c1610",
+      "bg-elev": "#26201a",
+      "bg-elev-2": "#312a22",
+      "line": "#3d3529",
+      "text": "#f7efe3",
+      "text-dim": "#c3b299",
+      "text-faint": "#8a7a63",
+      "accent": "#e0a44c",
+      "accent-ink": "#221a10",
+      "pos": "#8fbf6b",
+      "neg": "#e07a5f",
+      "warn": "#e6c35c",
+      "shadow": "0 8px 30px rgba(0,0,0,.4)",
+      "r-lg": "20px",
+      "r-md": "14px",
+      "r-sm": "10px"
+    },
+    "fontFamily": null,
     "fontImports": []
   },
   "monarch": {
@@ -2535,6 +2927,25 @@ const THEMES = {
     "name": "Monarch",
     "scheme": "dark",
     "bg": "#0a0e1a",
+    "tokens": {
+      "bg": "#0a0e1a",
+      "bg-elev": "#0f1626",
+      "bg-elev-2": "#141e33",
+      "line": "#2f6bd8",
+      "text": "#eaf1ff",
+      "text-dim": "#9ab4e6",
+      "text-faint": "#6079ad",
+      "accent": "#4d9dff",
+      "accent-ink": "#03080f",
+      "pos": "#3fe0a0",
+      "neg": "#ff5d7d",
+      "warn": "#ffd15c",
+      "shadow": "0 0 22px rgba(75,180,255,.14), 0 10px 34px rgba(0,0,0,.62)",
+      "r-lg": "5px",
+      "r-md": "4px",
+      "r-sm": "3px"
+    },
+    "fontFamily": "Orbitron",
     "fontImports": [
       "https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@600;700&display=swap"
     ]
@@ -2544,16 +2955,78 @@ const THEMES = {
     "name": "Paper",
     "scheme": "light",
     "bg": "#f6f7f9",
+    "tokens": {
+      "bg": "#f6f7f9",
+      "bg-elev": "#ffffff",
+      "bg-elev-2": "#f0f2f5",
+      "line": "#e3e6ea",
+      "text": "#12151a",
+      "text-dim": "#5c6570",
+      "text-faint": "#98a1ac",
+      "accent": "#2f6bff",
+      "accent-ink": "#ffffff",
+      "pos": "#12a05a",
+      "neg": "#d64545",
+      "warn": "#b7791f",
+      "shadow": "0 8px 24px rgba(20,30,50,.08)",
+      "r-lg": "20px",
+      "r-md": "14px",
+      "r-sm": "10px"
+    },
+    "fontFamily": null,
     "fontImports": []
   }
 };
 const THEME_DEFAULT = "midnight";
+const THEME_TOKEN_KEYS = ["bg","bg-elev","bg-elev-2","line","text","text-dim","text-faint","accent","accent-ink","pos","neg","warn","shadow","r-lg","r-md","r-sm"];
 /* THEMES-JS:END */
-const THEME_IDS = Object.keys(THEMES);
-const themeName = (id) => (THEMES[id] || {}).name || id || "Theme";
-const validTheme = (id) => (THEMES[id] ? id : THEME_DEFAULT);
-const themeBg = (id) => (THEMES[id] || {}).bg || "#0b0d10";
+/* THEME_REG = built-in THEMES + validated user themes (imported from links).
+   Built-ins are locked: a user theme can never shadow one. Rebuilt on refresh(). */
+let THEME_REG = { ...THEMES };
+let THEME_IDS = Object.keys(THEME_REG);
+function googleFontUrl(family){
+  return "https://fonts.googleapis.com/css2?family=" +
+    encodeURIComponent(String(family)).replace(/%20/g, "+") + ":wght@400;600;700&display=swap";
+}
+function rebuildThemeReg(){
+  THEME_REG = { ...THEMES };
+  // re-validate every stored user theme — a backup file is also "from outside"
+  const clean = [];
+  for (const ut of (S.settings.userThemes || [])){
+    const v = validateSharedTheme(ut);
+    if (!v.ok || THEMES[v.theme.id]) continue;       // drop invalid; never shadow a built-in
+    clean.push(v.theme);
+    THEME_REG[v.theme.id] = {
+      id: v.theme.id, name: v.theme.name, scheme: v.theme.scheme, custom: true,
+      author: v.theme.author || null,
+      bg: v.theme.tokens.bg || THEMES[THEME_DEFAULT].bg,
+      tokens: v.theme.tokens,
+      fontFamily: v.theme.font || null,
+      fontImports: v.theme.font ? [googleFontUrl(v.theme.font)] : [],
+    };
+  }
+  S.settings.userThemes = clean;                     // keep only what validated
+  THEME_IDS = Object.keys(THEME_REG);
+  ensureUserThemeCss();
+}
+const themeName = (id) => (THEME_REG[id] || {}).name || id || "Theme";
+const validTheme = (id) => (THEME_REG[id] ? id : THEME_DEFAULT);
+const themeBg = (id) => (THEME_REG[id] || {}).bg || "#0b0d10";
+const isBuiltInTheme = (id) => !!THEMES[id];
 const DEFAULT_SCHEDULE = { mode: "off", base: THEME_DEFAULT, windows: [], systemLight: "paper", systemDark: THEME_DEFAULT };
+
+/* runtime CSS for imported themes (built-ins live in the generated <style> region) */
+function ensureUserThemeCss(){
+  let el = document.getElementById("userThemeCss");
+  if (!el){ el = document.createElement("style"); el.id = "userThemeCss"; document.head.appendChild(el); }
+  el.textContent = (S.settings.userThemes || []).filter(ut => ut && !THEMES[ut.id]).map(ut => {
+    const decl = THEME_TOKEN_KEYS
+      .filter(k => (ut.tokens || {})[k])
+      .map(k => `  --${k}: ${ut.tokens[k]};`).join("\n");
+    const font = ut.font ? `\n  --font-heading: "${ut.font}", "SF Pro Display", system-ui, sans-serif;` : "";
+    return `:root[data-theme="${ut.id}"]{\n${decl}${font}\n}`;
+  }).join("\n");
+}
 
 function currentThemeId(){ return document.documentElement.getAttribute("data-theme") || THEME_DEFAULT; }
 
@@ -2561,7 +3034,7 @@ function applyTheme(name){
   name = validTheme(name);
   document.documentElement.setAttribute("data-theme", name);
   // inject this theme's font stylesheet(s) once (cached by the SW after first load)
-  const t = THEMES[name] || {};
+  const t = THEME_REG[name] || {};
   for (const href of (t.fontImports || [])){
     if (!document.querySelector(`link[data-theme-font="${href}"]`)){
       const l = document.createElement("link");
@@ -2741,6 +3214,331 @@ async function saveSchedule(patch){
   evaluateSchedule();
 }
 
+/* ============ [L] THEME LINK SHARING ============================= *
+ * A theme travels as https://<pages>/#theme=<payload>. The payload is the
+ * URL FRAGMENT only — it never reaches a server. On the receiving side every
+ * field is validated STRICTLY: unknown keys, non-strict colours, url()/<>/
+ * javascript: etc. => the whole link is rejected, app untouched. Only the
+ * palette + a whitelisted font name survive; decorativeCss / fontImports /
+ * any audio field are dropped. See THEME-SPEC.md.
+ * --------------------------------------------------------------- */
+const THEME_LINK = {
+  MAX_LINK_CHARS: 2800,      // <#theme=…> payload
+  MAX_JSON_BYTES: 4096,      // decoded theme JSON
+  PAYLOAD_VERSION: 1,
+};
+class ThemeLinkError extends Error { constructor(m){ super(m); this.name = "ThemeLinkError"; } }
+
+/* --- url-safe base64 (strict) --- */
+function b64urlEncodeBytes(bytes){
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecodeBytes(str){
+  if (!/^[A-Za-z0-9_-]*$/.test(str)) throw new ThemeLinkError("Share link is malformed.");
+  let b64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  let bin;
+  try { bin = atob(b64); } catch { throw new ThemeLinkError("Share link is corrupted."); }
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function drainStream(readable){
+  const reader = readable.getReader();
+  const chunks = []; let total = 0;
+  for (;;){
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); total += value.length;
+    if (total > THEME_LINK.MAX_JSON_BYTES * 4) throw new ThemeLinkError("Shared theme is too large.");
+  }
+  const out = new Uint8Array(total); let o = 0;
+  for (const c of chunks){ out.set(c, o); o += c.length; }
+  return out;
+}
+async function gzip(bytes){
+  const cs = new CompressionStream("deflate-raw");
+  const w = cs.writable.getWriter(); w.write(bytes); w.close();
+  return drainStream(cs.readable);
+}
+async function gunzip(bytes){
+  const ds = new DecompressionStream("deflate-raw");
+  const w = ds.writable.getWriter(); w.write(bytes); w.close();
+  return drainStream(ds.readable);
+}
+
+/* --- encode / decode --- */
+async function encodeThemeLink(theme){
+  const json = JSON.stringify(theme);
+  let bytes = new TextEncoder().encode(json), marker = "r";
+  if (typeof CompressionStream === "function"){
+    try { bytes = await gzip(new TextEncoder().encode(json)); marker = "d"; } catch(_) { marker = "r"; bytes = new TextEncoder().encode(json); }
+  }
+  return marker + b64urlEncodeBytes(bytes);
+}
+async function decodeThemeLink(payload){
+  if (typeof payload !== "string" || payload.length < 2) throw new ThemeLinkError("Empty share link.");
+  if (payload.length > THEME_LINK.MAX_LINK_CHARS) throw new ThemeLinkError("This share link is too large to import.");
+  const marker = payload[0];
+  let bytes = b64urlDecodeBytes(payload.slice(1));
+  if (marker === "d"){
+    if (typeof DecompressionStream !== "function") throw new ThemeLinkError("This link needs a newer browser to open.");
+    bytes = await gunzip(bytes);
+  } else if (marker !== "r"){
+    throw new ThemeLinkError("Unrecognised share link.");
+  }
+  if (bytes.length > THEME_LINK.MAX_JSON_BYTES) throw new ThemeLinkError("Shared theme is too large.");
+  let obj;
+  try { obj = JSON.parse(new TextDecoder().decode(bytes)); }
+  catch { throw new ThemeLinkError("Share link is corrupted."); }
+  return obj;
+}
+
+/* --- strict value validators --- */
+const _BAD_SUBSTR = /<|>|url\s*\(|expression|javascript:|@import|\/\*|\*\/|\\|`|\{|\}|;|data:|vbscript:|&#|behaviou?r\s*:|-moz-binding/i;
+function safeStr(s){ return typeof s === "string" && s.length <= 200 && !_BAD_SUBSTR.test(s); }
+const _NAMED_COLORS = new Set(("transparent black white red green blue yellow orange purple pink cyan magenta gray grey " +
+  "navy teal maroon olive lime aqua silver gold brown coral salmon khaki indigo violet crimson turquoise tomato orchid " +
+  "plum slateblue steelblue skyblue royalblue midnightblue darkblue lightblue darkgreen lightgreen seagreen forestgreen " +
+  "darkred firebrick darkorange goldenrod chocolate sienna tan beige ivory lavender whitesmoke gainsboro dimgray dimgrey " +
+  "darkgray darkgrey lightgray lightgrey slategray slategrey").split(" "));
+function isStrictColor(v){
+  if (typeof v !== "string" || v.length > 40) return false;
+  const s = v.trim().toLowerCase();
+  if (/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.test(s)) return true;
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(,\s*(0|1|0?\.\d{1,3}|\.\d{1,3}))?\s*\)$/.test(s)) return true;
+  if (/^hsla?\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*(,\s*(0|1|0?\.\d{1,3}|\.\d{1,3}))?\s*\)$/.test(s)) return true;
+  return _NAMED_COLORS.has(s);
+}
+function isStrictLength(v){
+  return typeof v === "string" && /^(0|-?\d{1,3}(\.\d{1,2})?(px|rem|em|%))$/.test(v.trim());
+}
+function isStrictShadow(v){
+  if (typeof v !== "string" || v.length > 140) return false;
+  const L = "(?:-?(?:0|\\d{1,3}(?:\\.\\d{1,2})?)(?:px)?)";
+  const A = "(?:0|1|0?\\.\\d{1,3}|\\.\\d{1,3})";
+  const C = `(?:#[0-9a-fA-F]{3,8}|rgba?\\(\\s*\\d{1,3}\\s*,\\s*\\d{1,3}\\s*,\\s*\\d{1,3}\\s*(?:,\\s*${A})?\\s*\\)|hsla?\\(\\s*\\d{1,3}\\s*,\\s*\\d{1,3}%\\s*,\\s*\\d{1,3}%\\s*(?:,\\s*${A})?\\s*\\))`;
+  const LAYER = `(?:inset\\s+)?${L}\\s+${L}(?:\\s+${L})?(?:\\s+${L})?(?:\\s+${C})?`;
+  return new RegExp(`^\\s*${LAYER}(?:\\s*,\\s*${LAYER}){0,3}\\s*$`, "i").test(v);
+}
+function validTokenValue(key, v){
+  if (typeof v !== "string" || !safeStr(v)) return false;
+  if (key === "shadow") return isStrictShadow(v);
+  if (key === "r-lg" || key === "r-md" || key === "r-sm") return isStrictLength(v);
+  return isStrictColor(v);
+}
+const FONT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{0,39}$/;
+
+/* --- the schema gate: obj (from a link, or a backup) -> {ok, theme} | {ok:false, error} --- */
+function validateSharedTheme(obj){
+  const R = (error) => ({ ok: false, error });
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return R("Not a theme.");
+  const ALLOWED = ["v", "id", "name", "author", "scheme", "tokens", "font"];
+  for (const k of Object.keys(obj)) if (!ALLOWED.includes(k)) return R(`Unexpected field "${k}".`);
+  if (obj.v !== THEME_LINK.PAYLOAD_VERSION) return R("Unsupported theme version.");
+  if (typeof obj.id !== "string" || !/^[a-z0-9-]{1,32}$/.test(obj.id)) return R("Bad theme id.");
+  if (typeof obj.name !== "string" || obj.name.trim().length < 1 || obj.name.length > 40 || !safeStr(obj.name))
+    return R("Bad theme name.");
+  if (obj.author !== undefined && (typeof obj.author !== "string" || obj.author.length > 40 || !safeStr(obj.author)))
+    return R("Bad author.");
+  if (obj.scheme !== "light" && obj.scheme !== "dark") return R("Bad scheme.");
+  if (!obj.tokens || typeof obj.tokens !== "object" || Array.isArray(obj.tokens)) return R("Missing palette.");
+  const keys = Object.keys(obj.tokens);
+  if (keys.length < 1 || keys.length > THEME_TOKEN_KEYS.length) return R("Bad palette size.");
+  const tokens = {};
+  for (const k of keys){
+    if (!THEME_TOKEN_KEYS.includes(k)) return R(`Unknown colour "${k}".`);
+    if (!validTokenValue(k, obj.tokens[k])) return R(`"${k}" is not a valid ${k === "shadow" ? "shadow" : k.startsWith("r-") ? "size" : "colour"}.`);
+    tokens[k] = obj.tokens[k].trim();
+  }
+  let font;
+  if (obj.font !== undefined && obj.font !== null){
+    if (typeof obj.font !== "string" || !FONT_NAME_RE.test(obj.font)) return R("Bad font name.");
+    font = obj.font;
+  }
+  return { ok: true, theme: {
+    v: 1, id: obj.id, name: obj.name.trim(), scheme: obj.scheme, tokens,
+    ...(obj.author ? { author: obj.author.trim() } : {}),
+    ...(font ? { font } : {}),
+  }};
+}
+
+/* --- build the payload for the CURRENT theme (built-in or user) --- */
+function serializeThemeForShare(id){
+  const t = THEME_REG[id]; if (!t) throw new ThemeLinkError("Unknown theme.");
+  const full = t.tokens || {};
+  const tokens = {};
+  for (const k of THEME_TOKEN_KEYS) if (full[k] && validTokenValue(k, full[k])) tokens[k] = full[k];
+  if (!Object.keys(tokens).length) throw new ThemeLinkError("This theme has no shareable palette.");
+  const p = { v: 1, id: t.id, name: t.name, scheme: t.scheme === "light" ? "light" : "dark", tokens };
+  if (t.fontFamily && FONT_NAME_RE.test(t.fontFamily)) p.font = t.fontFamily;
+  return p;
+}
+function shareBaseUrl(){
+  try { return location.origin + location.pathname; } catch { return "https://example.com/"; }
+}
+async function buildShareLink(id){
+  const payload = serializeThemeForShare(id);
+  const encoded = await encodeThemeLink(payload);
+  if (encoded.length > THEME_LINK.MAX_LINK_CHARS) throw new ThemeLinkError("Theme is too complex to share as a link.");
+  return { url: shareBaseUrl() + "#theme=" + encoded, encoded, payload };
+}
+
+/* --- export UI actions --- */
+async function copyShareLink(){
+  try {
+    const { url } = await buildShareLink(currentThemeId());
+    let copied = false;
+    try { await navigator.clipboard.writeText(url); copied = true; } catch(_) {}
+    if (!copied){
+      const ta = document.createElement("textarea");
+      ta.value = url; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { copied = document.execCommand("copy"); } catch(_) {}
+      ta.remove();
+    }
+    toast(copied ? "Share link copied" : "Couldn't copy — long-press the QR screen");
+  } catch(e){ toast(e instanceof ThemeLinkError ? e.message : "Couldn't build share link"); }
+}
+async function showThemeQr(){
+  let link;
+  try { link = await buildShareLink(currentThemeId()); }
+  catch(e){ toast(e instanceof ThemeLinkError ? e.message : "Couldn't build share link"); return; }
+  let qrSvg = "";
+  try { qrSvg = QR.toSVG(QR.encode(link.url, QR.ECL.L), { border: 3, dark: "#111", light: "#fff" }); }
+  catch(_) { qrSvg = ""; }
+  openFull(`
+    <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+    <div class="pagehead"><h1>Share theme</h1></div>
+    <div class="card" style="text-align:center">
+      <div style="font-weight:700;font-size:16px">${esc(themeName(currentThemeId()))}</div>
+      <div class="tiny faint" style="margin-bottom:12px">${link.payload.font ? "Font: " + esc(link.payload.font) + " · " : ""}${Object.keys(link.payload.tokens).length} colours</div>
+      ${qrSvg
+        ? `<div style="max-width:260px;margin:0 auto;background:#fff;padding:12px;border-radius:12px">${qrSvg}</div>`
+        : `<div class="sched-note">This theme is too large for a QR code — use Copy link.</div>`}
+      <p class="tiny faint" style="margin-top:12px">Scan on the other phone, or copy the link. The theme never leaves your device except in this link.</p>
+      <div class="row" style="gap:8px;margin-top:10px">
+        <button class="btn primary block" id="qrCopy">Copy link</button>
+      </div>
+      <details style="margin-top:12px"><summary class="tiny faint">Show link text</summary>
+        <p class="tiny mono" style="word-break:break-all;margin-top:6px">${esc(link.url)}</p></details>
+    </div>
+  `);
+  const cb = document.getElementById("qrCopy");
+  if (cb) cb.addEventListener("click", copyShareLink);
+}
+
+/* --- import from a #theme= fragment (boot) --- */
+let pendingImportTheme = null;
+function themeFragment(){
+  try {
+    const m = /(?:^|[#&])theme=([^&]*)/.exec(location.hash || "");
+    return m ? decodeURIComponent(m[1]) : null;
+  } catch { return null; }
+}
+function clearThemeFragment(){
+  try {
+    let h = (location.hash || "").replace(/(^#|&)theme=[^&]*/, "$1").replace(/^#&/, "#").replace(/[#&]$/, "");
+    if (h === "#") h = "";
+    if (history && history.replaceState) history.replaceState(null, document.title, location.pathname + location.search + h);
+    else location.hash = h;
+  } catch { try { location.hash = ""; } catch(_) {} }
+}
+async function handleThemeLinkFragment(){
+  const payload = themeFragment();
+  if (!payload) return;
+  clearThemeFragment();                       // strip it whatever happens
+  let obj, err;
+  try { obj = await decodeThemeLink(payload); }
+  catch(e){ err = e; }
+  let theme;
+  if (!err){
+    const res = validateSharedTheme(obj);
+    if (!res.ok) err = new ThemeLinkError(res.error);
+    else theme = res.theme;
+  }
+  if (err){
+    setTimeout(() => toast("Theme link rejected: " + (err instanceof ThemeLinkError ? err.message : "invalid")), 700);
+    return;                                    // app entirely untouched
+  }
+  pendingImportTheme = theme;
+  setTimeout(() => openThemeImportPreview(theme), 450);
+}
+
+function themePreviewMarkup(theme){
+  const t = { ...THEMES[THEME_DEFAULT].tokens, ...theme.tokens };
+  const vars = THEME_TOKEN_KEYS.map(k => `--${k}:${t[k]}`).join(";");
+  return `<div style="${vars};background:var(--bg);color:var(--text);border-radius:12px;padding:14px;border:1px solid var(--line)">
+    <div style="font-weight:700;margin-bottom:8px">${esc(theme.name)}</div>
+    <div style="background:var(--bg-elev);border:1px solid var(--line);border-radius:var(--r-md);padding:10px;box-shadow:var(--shadow)">
+      <div style="font-size:11px;color:var(--text-dim);letter-spacing:.04em">SAFE TO SPEND</div>
+      <div style="font-size:24px;font-weight:750">OMR 12.500</div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <span style="color:var(--pos);font-weight:700">+3.200</span>
+        <span style="color:var(--neg);font-weight:700">-1.100</span>
+        <span style="color:var(--warn);font-weight:700">pace</span>
+      </div>
+    </div>
+    <button style="margin-top:10px;background:var(--accent);color:var(--accent-ink);border:0;border-radius:var(--r-md);padding:8px 14px;font-weight:700">Save</button>
+  </div>`;
+}
+function openThemeImportPreview(theme){
+  const collides = isBuiltInTheme(theme.id);
+  openFull(`
+    <button class="btn ghost" id="tiCancel" style="margin-bottom:8px">← Cancel</button>
+    <div class="pagehead"><h1>Import theme</h1></div>
+    <div class="card">
+      <div style="font-size:20px;font-weight:750">${esc(theme.name)}</div>
+      <div class="tiny faint">${theme.author ? "by " + esc(theme.author) + " · " : ""}${theme.scheme} · ${Object.keys(theme.tokens).length} colours${theme.font ? " · font " + esc(theme.font) : ""}</div>
+    </div>
+    <div class="card">${themePreviewMarkup(theme)}</div>
+    <div class="card">
+      <div class="tiny faint">🔒 Audio is not included in shared themes.</div>
+      <div class="tiny faint" style="margin-top:4px">🔒 Custom effects (scanlines, System-window borders, animations, extra glows) are not included — a shared theme is the colour palette${theme.font ? " and font name" : ""} only.</div>
+      ${theme.font ? `<div class="tiny faint" style="margin-top:4px">The font "${esc(theme.font)}" is loaded from Google Fonts by name.</div>` : ""}
+      ${collides ? `<div class="tiny" style="margin-top:6px;color:var(--warn)">A built-in theme already uses the id "${esc(theme.id)}" — this will import as "${esc(theme.id)}-shared".</div>` : ""}
+    </div>
+    <div class="row" style="gap:10px">
+      <button class="btn block" id="tiCancel2">Cancel</button>
+      <button class="btn primary block" id="tiImport">Import & apply</button>
+    </div>
+  `);
+  const cancel = () => { pendingImportTheme = null; closeFull(); };
+  document.getElementById("tiCancel").addEventListener("click", cancel);
+  document.getElementById("tiCancel2").addEventListener("click", cancel);
+  document.getElementById("tiImport").addEventListener("click", () => commitThemeImport(theme));
+}
+async function commitThemeImport(theme){
+  let id = theme.id;
+  if (isBuiltInTheme(id)) id = (id + "-shared").slice(0, 32);
+  while (isBuiltInTheme(id)) id = (id + "x").slice(0, 32);
+  const stored = { ...theme, id };
+  const list = (S.settings.userThemes || []).filter(x => x.id !== id);
+  list.push(stored);
+  await DB.setMeta("userThemes", list);
+  S.settings.userThemes = list;
+  rebuildThemeReg();
+  pendingImportTheme = null;
+  closeFull();
+  await pickThemeManually(id);
+  toast("Imported “" + theme.name + "”");
+  if (currentTab) render();
+}
+async function deleteUserTheme(id){
+  if (isBuiltInTheme(id)) { toast("Built-in themes can't be deleted"); return; }
+  const list = (S.settings.userThemes || []).filter(x => x.id !== id);
+  await DB.setMeta("userThemes", list);
+  S.settings.userThemes = list;
+  if (currentThemeId() === id){
+    await DB.setMeta("themeManual", null); S.settings.themeManual = null;
+  }
+  rebuildThemeReg();
+  if (currentThemeId() === id) applyThemeSmooth(THEME_DEFAULT);
+  openFull(settingsHTML());
+}
+
 /* ---- [I] ONBOARDING ----------------------------------------------- */
 const ONB = document.getElementById("onb");
 let onbState = { step:0, income:"", salaryDay:"25", savePct:"15", envelopes:["Food","Transport","Boxing/Fitness","Family"] };
@@ -2832,6 +3630,7 @@ async function boot(){
   await DB.open();
   await seedIfNeeded();
   await refresh();
+  await handleThemeLinkFragment();        // may queue an import preview; never auto-applies
   resolveThemeOnBoot();
   startScheduler();
   await rollRecurring();
@@ -2892,6 +3691,8 @@ document.addEventListener("visibilitychange", () => {
     refresh().then(() => { updateBadge(); evaluateSchedule(); flushPendingThemeSwitch(); if (currentTab) render(); });
   }
 });
+// a #theme= link pasted into the already-open app is handled too (still shows the preview, never auto-applies)
+window.addEventListener("hashchange", () => { if (themeFragment() && !pendingImportTheme) handleThemeLinkFragment(); });
 
 boot().catch((err) => {
   console.error("boot failed", err);
