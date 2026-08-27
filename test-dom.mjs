@@ -52,8 +52,11 @@ if (!win.TextDecoder) win.TextDecoder = TextDecoder;
     M.load = function () {};
     Object.defineProperty(M, "paused", { get() { return this._paused !== false; }, configurable: true });
     Object.defineProperty(M, "duration", { get() { return 200; }, configurable: true });
+    Object.defineProperty(M, "readyState", { get() { return 1; }, configurable: true });
   }
 }
+// jsdom has no fetch — the theme-music probe expects the local mp3 to exist here
+if (!win.fetch) win.fetch = async (u) => ({ ok: /theme-music\.mp3/.test(String(u)), status: /theme-music\.mp3/.test(String(u)) ? 206 : 404 });
 
 const $ = (s) => doc.querySelector(s);
 const $$ = (s) => [...doc.querySelectorAll(s)];

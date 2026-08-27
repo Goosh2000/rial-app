@@ -4343,8 +4343,20 @@ function prefersReducedMotion(){
 
 /* ---- theme music: tap-to-play, seamless loop back to startAt, hides if missing ---- */
 const themeMusic = {
-  el: null, wired: false, missing: false, started: false, seekPending: null,
+  el: null, wired: false, missing: false, started: false, seekPending: null, probed: "",
   spec(){ return (THEME_REG[currentThemeId()] || {}).music || null; },
+  async probe(){                                          // one cheap check so a missing file hides the control up front
+    const sp = this.spec();
+    if (!sp || this.started || this.probed === sp.src) return;
+    this.probed = sp.src;
+    try {
+      const res = await fetch(sp.src, { method: "GET", headers: { Range: "bytes=0-0" }, cache: "no-store" });
+      if (!res.ok && res.status !== 206) throw 0;
+    } catch(_) {
+      this.missing = true;
+    }
+    this.render();
+  },
   _applyStart(){                                          // seek to startAt once the media can honour it
     if (this.seekPending == null || !this.el) return;
     const want = this.seekPending;
@@ -4382,6 +4394,7 @@ const themeMusic = {
       });
     }
     this.render();
+    this.probe();
   },
   playing(){ return !!(this.el && this.started && !this.el.paused); },
   async toggle(){
@@ -4412,9 +4425,9 @@ const themeMusic = {
     DB.setMeta("musicVolume", v);
   },
   onThemeChange(){
-    if (this.spec()) { this.render(); return; }
+    if (this.spec()) { this.render(); this.probe(); return; }
     if (this.el){ try { this.el.pause(); this.el.removeAttribute("src"); this.el.load(); } catch(_){} }
-    this.started = false; this.missing = false; this.seekPending = null;
+    this.started = false; this.missing = false; this.seekPending = null; this.probed = "";
     this.render();
   },
   render(){                                               // reflect state onto any live controls
