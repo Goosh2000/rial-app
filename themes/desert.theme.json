@@ -1,0 +1,20 @@
+{
+  "id": "desert",
+  "name": "Desert",
+  "scheme": "dark",
+  "tokens": {
+    "bg": "#1c1610",
+    "bg-elev": "#26201a",
+    "bg-elev-2": "#312a22",
+    "line": "#3d3529",
+    "text": "#f7efe3",
+    "text-dim": "#c3b299",
+    "text-faint": "#8a7a63",
+    "accent": "#e0a44c",
+    "accent-ink": "#221a10",
+    "pos": "#8fbf6b",
+    "neg": "#e07a5f",
+    "warn": "#e6c35c",
+    "shadow": "0 8px 30px rgba(0,0,0,.4)"
+  }
+}

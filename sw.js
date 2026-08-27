@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "4";   // v4: theme auto-scheduler
+const SW_VERSION = "5";   // v5: theme-file engine + Monarch theme
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [
@@ -54,15 +54,17 @@ self.addEventListener("message", (e) => {
   }
 });
 
-const isVendorOCR = (url) => /tesseract|tessdata|cdn\.jsdelivr\.net|unpkg\.com/i.test(url);
+// cross-origin assets we cache-first + keep offline: OCR engine, and theme web fonts
+const isCacheableVendor = (url) =>
+  /tesseract|tessdata|cdn\.jsdelivr\.net|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com/i.test(url);
 
 self.addEventListener("fetch", (e) => {
   const { request } = e;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
 
-  // Vendor / OCR assets (cross-origin): cache-first, then network, cache forever.
-  if (isVendorOCR(url.href)) {
+  // Vendor assets (cross-origin): cache-first, then network, cache forever.
+  if (isCacheableVendor(url.href)) {
     e.respondWith((async () => {
       const cached = await caches.match(request);
       if (cached) return cached;

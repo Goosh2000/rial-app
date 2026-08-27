@@ -1,0 +1,20 @@
+{
+  "id": "depth",
+  "name": "Depth",
+  "scheme": "dark",
+  "tokens": {
+    "bg": "#070f1c",
+    "bg-elev": "#0e1a2e",
+    "bg-elev-2": "#152540",
+    "line": "#1e3355",
+    "text": "#eaf1fb",
+    "text-dim": "#93a7c4",
+    "text-faint": "#5b7091",
+    "accent": "#5bd6ff",
+    "accent-ink": "#04121f",
+    "pos": "#4fe0b0",
+    "neg": "#ff7a8a",
+    "warn": "#ffd06b",
+    "shadow": "0 10px 34px rgba(0,0,0,.5)"
+  }
+}

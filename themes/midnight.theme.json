@@ -1,0 +1,7 @@
+{
+  "id": "midnight",
+  "name": "Midnight",
+  "scheme": "dark",
+  "_note": "The default. Inherits the whole palette from base.theme.json.",
+  "tokens": {}
+}

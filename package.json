@@ -5,7 +5,8 @@
   "description": "Private, offline-first personal finance PWA (OMR). The app itself is dependency-free: index.html + manifest.json + sw.js. This package.json exists ONLY for dev tooling (icon build + tests).",
   "scripts": {
     "icons": "node build-icons.js",
-    "test": "node test.mjs && node test-dom.mjs && node test-browser.mjs"
+    "themes": "node build-themes.js",
+    "test": "node build-themes.js --check && node test.mjs && node test-dom.mjs && node test-browser.mjs"
   },
   "license": "ISC",
   "type": "commonjs",

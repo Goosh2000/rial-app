@@ -1,0 +1,27 @@
+{
+  "id": "base",
+  "name": "Base",
+  "locked": true,
+  "scheme": "dark",
+  "_note": "LOCKED. Defines the full token contract + safe defaults (also the Midnight palette). build-themes.js refuses to build if the token keys here drift from its hardcoded contract. Other themes are deltas on this.",
+  "tokens": {
+    "bg": "#0b0d10",
+    "bg-elev": "#14171c",
+    "bg-elev-2": "#1c2027",
+    "line": "#262b33",
+    "text": "#f4f6f8",
+    "text-dim": "#9aa4b0",
+    "text-faint": "#5f6773",
+    "accent": "#4f8cff",
+    "accent-ink": "#ffffff",
+    "pos": "#3ddc91",
+    "neg": "#ff6b6b",
+    "warn": "#ffc266",
+    "shadow": "0 8px 30px rgba(0,0,0,.35)",
+    "r-lg": "20px",
+    "r-md": "14px",
+    "r-sm": "10px"
+  },
+  "font": { "heading": null, "imports": [] },
+  "decorativeCss": ""
+}

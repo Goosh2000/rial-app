@@ -1,0 +1,31 @@
+{
+  "id": "monarch",
+  "name": "Monarch",
+  "scheme": "dark",
+  "_note": "Solo-Leveling-inspired 'System window' feel. Original CSS only, no copyrighted assets. Readability first, glow second.",
+  "tokens": {
+    "bg": "#0a0e1a",
+    "bg-elev": "#0f1626",
+    "bg-elev-2": "#141e33",
+    "line": "#2f6bd8",
+    "text": "#eaf1ff",
+    "text-dim": "#9ab4e6",
+    "text-faint": "#6079ad",
+    "accent": "#4d9dff",
+    "accent-ink": "#03080f",
+    "pos": "#3fe0a0",
+    "neg": "#ff5d7d",
+    "warn": "#ffd15c",
+    "shadow": "0 0 22px rgba(75,180,255,.14), 0 10px 34px rgba(0,0,0,.62)",
+    "r-lg": "5px",
+    "r-md": "4px",
+    "r-sm": "3px"
+  },
+  "font": {
+    "heading": "\"Orbitron\", \"Rajdhani\", \"SF Pro Display\", \"Segoe UI\", system-ui, sans-serif",
+    "imports": [
+      "https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@600;700&display=swap"
+    ]
+  },
+  "decorativeCss": "[data-theme=\"monarch\"] body::after{content:\"\";position:fixed;inset:0;z-index:1;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(130,175,255,.035) 0 1px,transparent 1px 3px)}\n[data-theme=\"monarch\"] .pagehead h1{letter-spacing:.06em;text-transform:uppercase;text-shadow:0 0 14px rgba(77,157,255,.35)}\n[data-theme=\"monarch\"] .hero .label{letter-spacing:.14em;text-transform:uppercase}\n[data-theme=\"monarch\"] .hero .big{text-shadow:0 0 16px rgba(77,157,255,.4)}\n[data-theme=\"monarch\"] .card{border-color:color-mix(in srgb,var(--accent) 42%,transparent);background:linear-gradient(160deg,color-mix(in srgb,var(--bg-elev) 96%,var(--accent)),var(--bg-elev));box-shadow:inset 0 0 0 1px rgba(120,190,255,.07),0 0 16px rgba(75,180,255,.07);clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)}\n[data-theme=\"monarch\"] .card::before{content:\"\";position:absolute;top:0;right:0;width:12px;height:12px;border-top:1px solid var(--accent);transform:translateX(-6px) translateY(6px) rotate(45deg);transform-origin:top right;box-shadow:0 0 6px rgba(77,157,255,.5)}\n[data-theme=\"monarch\"] .screen{animation:monarch-materialize .22s cubic-bezier(.2,.9,.3,1)}\n[data-theme=\"monarch\"] .sheet.open{animation:monarch-materialize .2s cubic-bezier(.2,.9,.3,1)}\n[data-theme=\"monarch\"] #addBtn{box-shadow:0 0 0 1px rgba(120,190,255,.5),0 0 22px rgba(77,157,255,.55)}\n[data-theme=\"monarch\"] nav#tabs{border-top-color:color-mix(in srgb,var(--accent) 40%,transparent);box-shadow:0 -1px 20px rgba(75,180,255,.1)}\n[data-theme=\"monarch\"] .chip[aria-pressed=\"true\"],[data-theme=\"monarch\"] .seg button[aria-pressed=\"true\"]{box-shadow:0 0 14px rgba(77,157,255,.45)}\n[data-theme=\"monarch\"] .progress > i{box-shadow:0 0 10px color-mix(in srgb,var(--accent) 60%,transparent)}\n@keyframes monarch-materialize{from{opacity:0;transform:scale(.975)}60%{opacity:1}to{opacity:1;transform:none}}\n@media (prefers-reduced-motion:reduce){[data-theme=\"monarch\"] .screen,[data-theme=\"monarch\"] .sheet.open{animation:none}}"
+}

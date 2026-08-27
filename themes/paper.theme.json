@@ -1,0 +1,20 @@
+{
+  "id": "paper",
+  "name": "Paper",
+  "scheme": "light",
+  "tokens": {
+    "bg": "#f6f7f9",
+    "bg-elev": "#ffffff",
+    "bg-elev-2": "#f0f2f5",
+    "line": "#e3e6ea",
+    "text": "#12151a",
+    "text-dim": "#5c6570",
+    "text-faint": "#98a1ac",
+    "accent": "#2f6bff",
+    "accent-ink": "#ffffff",
+    "pos": "#12a05a",
+    "neg": "#d64545",
+    "warn": "#b7791f",
+    "shadow": "0 8px 24px rgba(20,30,50,.08)"
+  }
+}

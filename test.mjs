@@ -57,7 +57,7 @@ const document = {
   getElementById: (id) => (id === "wrapWrap" ? null : id === "onb" ? { ...mkEl(), hidden: true } : mkEl()),
   querySelector: () => mkEl(), querySelectorAll: () => [],
   createElement: () => mkEl(), addEventListener() {},
-  body: mkEl(),
+  body: mkEl(), head: mkEl(),
   documentElement: {
     setAttribute: (k, v) => { if (k === "data-theme") _htmlTheme = v; },
     getAttribute: (k) => (k === "data-theme" ? _htmlTheme : null),
@@ -84,7 +84,7 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   parseCSV, guessDate, csvParseRow, autoMap, isDuplicate, parseSMSBlock, splitBlocks, buildICS, icsSignature,
   advanceDue, rollRecurring, DEFAULT_SMS_PATTERNS, liveNotifs, notifCount, planEnvelopes, planPayments, planWishlist, planGoals,
   parseHM, fmtHM, windowActive, scheduledThemeAt, nextBoundaryAfter, manualExpired, currentThemeId,
-  evaluateSchedule, applyTheme, THEME_META, THEME_IDS, themeName, scheduleHTML };`;
+  evaluateSchedule, applyTheme, THEMES, THEME_IDS, THEME_DEFAULT, themeName, themeBg, validTheme, scheduleHTML };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
 const { U, F, S, DB, newDraft, displayAmount, SCREENS, keypadHTML, settingsHTML } = T;
@@ -328,6 +328,34 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   const sig1 = T.icsSignature();
   S.recurring[0].nextDue += 86400000;
   ok("icsSignature changes when a due date changes", T.icsSignature() !== sig1);
+}
+
+/* ---- 7g0. theme-file engine ---- */
+{
+  const ids = T.THEME_IDS;
+  ok("THEMES registry loaded from generated region", ids.length >= 5, JSON.stringify(ids));
+  for (const id of ["midnight", "paper", "desert", "depth", "monarch"])
+    ok(`THEMES has "${id}"`, ids.includes(id));
+  eq("THEME_DEFAULT is midnight", T.THEME_DEFAULT, "midnight");
+  eq("THEME_IDS starts with the default", ids[0], "midnight");
+  eq("themeName('monarch')", T.themeName("monarch"), "Monarch");
+  eq("THEMES.monarch.scheme", T.THEMES.monarch.scheme, "dark");
+  eq("THEMES.paper.scheme", T.THEMES.paper.scheme, "light");
+  ok("themeBg('monarch') is a hex colour", /^#[0-9a-f]{6}$/i.test(T.themeBg("monarch")));
+  ok("monarch declares a Google Fonts import", T.THEMES.monarch.fontImports.some((u) => /fonts\.googleapis\.com/.test(u)));
+  eq("validTheme falls back to default for unknown id", T.validTheme("nope"), "midnight");
+  // generated CSS + decorative CSS actually landed in index.html
+  ok("index.html has :root[data-theme=\"monarch\"] palette", /:root\[data-theme="monarch"\]\{[^}]*--bg:\s*#0a0e1a/.test(html));
+  ok("index.html has monarch decorative CSS", /\[data-theme="monarch"\] \.card\{/.test(html));
+  ok("index.html has THEMES-JS generated block", /THEMES-JS:START[\s\S]*const THEMES = \{[\s\S]*"monarch"[\s\S]*THEMES-JS:END/.test(html));
+}
+
+/* ---- 7g0b. index.html is in sync with themes/*.theme.json ---- */
+try {
+  execSync(`node "${path.join(__dir, "build-themes.js")}" --check`, { stdio: "pipe" });
+  ok("build-themes.js --check: index.html is in sync with theme files", true);
+} catch (e) {
+  ok("build-themes.js --check: index.html is in sync with theme files", false, String(e.stdout || e.stderr || e));
 }
 
 /* ---- 7g. theme auto-scheduler ---- */

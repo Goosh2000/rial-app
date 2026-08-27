@@ -8,9 +8,12 @@ no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON ba
 ## Files
 | file | purpose |
 |---|---|
-| `index.html` | the entire app — all CSS + JS inline |
+| `index.html` | the entire app — all CSS + JS inline (theme regions are generated) |
 | `manifest.json` | PWA manifest (install to Home Screen) |
-| `sw.js` | service worker — offline shell + OCR-asset caching |
+| `sw.js` | service worker — offline shell + OCR/web-font caching |
+| `themes/*.theme.json` | theme source of truth — `base` is locked; see **THEME-SPEC.md** |
+| `build-themes.js` | compiles `themes/*` into `index.html` — `node build-themes.js` (`--check` = CI) |
+| `THEME-SPEC.md` | theme file format + token contract |
 | `icon-*.png` | app icons (generated) |
 | `build-icons.js` | regenerates icons — pure Node, no deps: `node build-icons.js` |
 | `test*.mjs` | test suites (see **Test** below) |
@@ -29,26 +32,28 @@ Then open the URL in a browser. On `file://` the app runs but the SW won't regis
 ## Test
 ```
 npm install      # once — pulls jsdom + puppeteer-core (dev only, not shipped)
-npm test         # test.mjs  +  test-dom.mjs  +  test-browser.mjs   (226 assertions)
+npm test         # build-themes --check  +  test.mjs + test-dom.mjs + test-browser.mjs   (251 assertions)
 ```
-- **`test.mjs`** (147) — pure logic in a `vm` sandbox: money math (integer baisa, no float
+- **`test.mjs`** (165) — pure logic in a `vm` sandbox: money math (integer baisa, no float
   drift), Asia/Muscat month/date boundaries, Safe-to-Spend (flat + envelope-aware),
   recurring-cadence normalisation & rollover, round-up sim, CSV parser + dedupe, SMS regex
   extractor, `.ics` structure/validity, export/import round-trip, every screen renders,
   **theme scheduler** (window matching incl. wrap-past-midnight, next-boundary, system mode,
-  manual-override expiry, `evaluateSchedule`).
+  manual-override expiry, `evaluateSchedule`), **theme-file engine** (registry loaded from the
+  generated region, Monarch present, `build-themes.js --check` in sync).
 - **`test-dom.mjs`** (46) — real `index.html` in jsdom, driven through real event handlers:
   onboarding → keypad add → tab nav → split-salary → envelope-aware STS → wishlist 30-day
   lock → goal + move-to-savings transfer → SMS paste → CSV import + dedupe → `.ics` build →
   theme switch → **scheduler switches at simulated times, defers while a modal is open then
   applies on close, manual override + resume, wrap-past-midnight** → JSON export (incl.
   schedule state). Regression check that `#onb` computes to `display:none` when hidden.
-- **`test-browser.mjs`** (33) — the app served over HTTP and loaded in real headless Chrome
+- **`test-browser.mjs`** (40) — the app served over HTTP and loaded in real headless Chrome
   (auto-detected; Edge fallback; skips if neither installed). Asserts **no full-screen
-  overlay covers the app**, the dashboard/tabs/keypad paint, **every theme's body/dim text
-  meets WCAG-AA contrast**, **a scheduled switch actually applies with the crossfade**, the
-  schedule editor renders, the service worker registers, the page still renders after a hard
-  reload and **offline**, zero console/page errors. Writes `screenshot-*.png` for each screen.
+  overlay covers the app**, the dashboard/tabs/keypad paint, **all 5 themes' body/dim text
+  meet WCAG-AA contrast**, **Monarch loads its Google Font + gets the System-window notch +
+  sharp radii**, **a scheduled switch actually applies with the crossfade**, the schedule
+  editor renders, the SW registers, the page still renders after a hard reload and
+  **offline**, zero console/page errors. Writes `screenshot-theme-*.png` for each theme.
 
 **Not** covered: touch-gesture feel, iOS Badging API, live Tesseract OCR accuracy, `.ics`
 import into Apple Calendar — verify those on a device.
@@ -76,7 +81,9 @@ import into Apple Calendar — verify those on a device.
 | 9 | Screenshot OCR — Tesseract.js, lazy-loaded from CDN once then SW-cached, on-device, mandatory review | ✅ |
 | 10 | Monthly Plan — split-salary ritual (goals first, then envelope sliders), pace indicators, envelope moves | ✅ |
 | 11 | Notifications — `.ics` export (payments/wishlist/salary + alarms), staleness check, app-badge, in-app center | ✅ |
-| +  | **Theme auto-scheduler** — Settings › Theme › Schedule: Off / Match system / Time windows (wrap past midnight OK). Crossfades, never mid-interaction. Manual pick wins until the next boundary with a "resume schedule" banner. In `themeSchedule`/`themeManual` meta, included in backup. `THEME_META` is the single theme registry. | ✅ |
+| +  | **Theme engine** — themes are `themes/*.theme.json` data files (`base` locked, full token contract in **THEME-SPEC.md**); `build-themes.js` compiles palette + optional font + decorative CSS into `index.html`. `THEMES` registry drives the scheduler, settings picker and tests. Build fails on WCAG contrast regressions. | ✅ |
+| +  | **Monarch theme** — Solo-Leveling "System window" feel, original CSS only: near-black navy + electric-blue glow, glowing 1px borders, corner-notch bevel, Orbitron headings (SW-cached), subtle scanlines, panel-materialize animation. Passes the same contrast bar (17:1 / 9.2:1). | ✅ |
+| +  | **Theme auto-scheduler** — Settings › Theme › Schedule: Off / Match system / Time windows (wrap past midnight OK). Crossfades, never mid-interaction. Manual pick wins until the next boundary with a "resume schedule" banner. `themeSchedule`/`themeManual` meta, in backup. Reads themes from the loaded registry. | ✅ |
 
 ### Known limitations / notes
 - **Badging API** updates only while the app or its SW is running — it reflects state "as of last open". iOS can't refresh it in the background.

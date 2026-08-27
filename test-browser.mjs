@@ -68,8 +68,10 @@ const failedRequests = [];
     consoleErrors.push(line);
   });
   page.on("pageerror", (err) => pageErrors.push(err.message + "\n" + (err.stack || "")));
-  page.on("requestfailed", (r) => failedRequests.push(`${r.url()} — ${r.failure()?.errorText}`));
-  page.on("response", (r) => { if (r.status() >= 400) failedRequests.push(`${r.url()} — HTTP ${r.status()}`); });
+  // theme web-fonts (Google Fonts) degrade to a fallback stack by design — not app failures
+  const ignoreReq = (u) => /favicon\.ico|fonts\.googleapis\.com|fonts\.gstatic\.com/.test(u);
+  page.on("requestfailed", (r) => { if (!ignoreReq(r.url())) failedRequests.push(`${r.url()} — ${r.failure()?.errorText}`); });
+  page.on("response", (r) => { if (r.status() >= 400 && !ignoreReq(r.url())) failedRequests.push(`${r.url()} — HTTP ${r.status()}`); });
 
   // ---- first load ----
   await page.goto(`${base}/index.html`, { waitUntil: "networkidle0", timeout: 15000 });
@@ -194,6 +196,25 @@ const failedRequests = [];
     });
     ok(`theme "${id}": body text contrast >= 4.5 (${t.cText})`, t.textOK, JSON.stringify(t));
     ok(`theme "${id}": dim text contrast >= 3 (${t.cDim})`, t.dimOK, JSON.stringify(t));
+
+    if (id === "monarch") {
+      await new Promise((r) => setTimeout(r, 400));
+      const m = await page.evaluate(() => {
+        const card = document.querySelector("#view .card");
+        return {
+          fontLinkInjected: !!document.querySelector('link[data-theme-font*="fonts.googleapis.com"]'),
+          headingVar: getComputedStyle(document.documentElement).getPropertyValue("--font-heading").trim(),
+          headingUsesOrbitron: /Orbitron/i.test(getComputedStyle(document.querySelector(".pagehead h1")).fontFamily),
+          cardHasNotch: card ? getComputedStyle(card).clipPath !== "none" : false,
+          rLg: getComputedStyle(document.documentElement).getPropertyValue("--r-lg").trim(),
+        };
+      });
+      ok("monarch: Google-Fonts <link> injected on activate", m.fontLinkInjected, JSON.stringify(m));
+      ok("monarch: --font-heading overridden to Orbitron stack", /Orbitron/i.test(m.headingVar), m.headingVar);
+      ok("monarch: headings resolve to the Orbitron stack", m.headingUsesOrbitron, JSON.stringify(m));
+      ok("monarch: cards get the System-window corner notch (clip-path)", m.cardHasNotch, JSON.stringify(m));
+      ok("monarch: sharp radii from the theme file (--r-lg 5px)", m.rLg === "5px", m.rLg);
+    }
     await page.screenshot({ path: path.join(__dir, `screenshot-theme-${id}.png`) });
   }
   await page.evaluate(() => applyTheme("midnight"));
