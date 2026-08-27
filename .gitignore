@@ -1,0 +1,5 @@
+node_modules/
+.app.extracted.js
+screenshot-*.png
+*.log
+.DS_Store

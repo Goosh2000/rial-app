@@ -1,0 +1,17 @@
+{
+  "name": "rial-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private, offline-first personal finance PWA (OMR). The app itself is dependency-free: index.html + manifest.json + sw.js. This package.json exists ONLY for dev tooling (icon build + tests).",
+  "scripts": {
+    "icons": "node build-icons.js",
+    "test": "node test.mjs && node test-dom.mjs && node test-browser.mjs"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "jsdom": "^25.0.1",
+    "puppeteer-core": "^23.11.1"
+  },
+  "comment": "test-browser.mjs auto-detects an installed Chrome/Edge; if neither is present it skips."
+}
