@@ -2556,7 +2556,14 @@ function startScheduler(){
   if (!_schedMQBound && window.matchMedia){
     try {
       const mq = matchMedia("(prefers-color-scheme: dark)");
-      const h = () => evaluateSchedule();
+      const h = () => {
+        // a system light/dark flip is the "boundary" for a system-mode manual override
+        const sch = S.settings.themeSchedule || DEFAULT_SCHEDULE;
+        if (sch.mode === "system" && S.settings.themeManual){
+          S.settings.themeManual = null; DB.setMeta("themeManual", null);
+        }
+        evaluateSchedule();
+      };
       mq.addEventListener ? mq.addEventListener("change", h) : mq.addListener(h);
       _schedMQBound = true;
     } catch (_) {}
