@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "14";  // v14: persistent Settings (gear) + Notifications entry points in every screen header
+const SW_VERSION = "15";  // v15: iOS-safe music file picker (<label for>, broadened accept, decode-validate, sync tap path)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

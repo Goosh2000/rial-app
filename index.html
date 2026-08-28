@@ -243,6 +243,11 @@ nav#tabs .addslot{ position:relative; }
 .btn.danger{ color:var(--neg); }
 .btn.block{ width:100%; }
 .btn.sm{ min-height:36px; font-size:13px; padding:0 12px; }
+.btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+/* file-pick control: a real <label for> (iOS opens the picker with zero JS) with a 44px target */
+.btn.sm.filepick{ cursor:pointer; min-height:44px; padding:0 14px; }
+/* the <input type=file> stays in the layout + focusable — NOT display:none, which iOS refuses to open */
+.vh-input{ position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
 .field{ display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
 .field label{ font-size:12px; font-weight:600; color:var(--text-dim); letter-spacing:.02em; }
 .field input, .field select, .field textarea{
@@ -648,6 +653,8 @@ async function refresh(){
     game: await DB.meta("game", { xp: 0, quests: { ymd: "", done: [] } }),
     musicVolume: await DB.meta("musicVolume", 0.5),
     musicFileName: await DB.meta("musicFileName", null),   // name only; the Blob lives under "musicFile"
+    musicFileSize: await DB.meta("musicFileSize", 0),
+    musicFileType: await DB.meta("musicFileType", ""),
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -1344,6 +1351,7 @@ SCREENS.insights = () => {
 function monthName(mk){ const [y,m] = mk.split("-").map(Number); return new Date(y,m-1,1).toLocaleDateString("en-GB",{month:"long",year:"numeric"}); }
 function emptyState(ic,t,p){ return `<div class="empty"><div class="e-ic">${ic}</div><h3 style="margin-top:8px">${t}</h3><p>${p}</p></div>`; }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtBytes(n){ n = +n || 0; return n < 1024 ? n + " B" : n < 1048576 ? Math.round(n/1024) + " KB" : (n/1048576).toFixed(1) + " MB"; }
 
 /* shared page header for the four main screens — carries the persistent
    Notifications + Settings entry points (and the theme-music toggle). */
@@ -3043,17 +3051,18 @@ function settingsHTML(){
         <div class="tiny faint" style="margin-top:6px">Tap-to-play only. Starts at ${reg.music.startAt||0}s and loops seamlessly. Keeps playing as you move between tabs; stops when you leave the theme.</div>
       </div>
       <div style="margin-top:10px">
-        <input type="file" id="musicFilePick" accept="audio/*" hidden />
-        <div class="row" style="gap:8px;flex-wrap:wrap">
-          <button class="btn sm" id="btnPickMusic">Choose music file</button>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <label class="btn sm filepick" for="musicFilePick" role="button" tabindex="0">Choose music file</label>
           ${s.musicFileName ? `<button class="btn sm ghost danger" id="btnRemoveMusic">Remove music file</button>` : ""}
         </div>
+        <input type="file" id="musicFilePick" class="vh-input" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.flac,.opus" />
         <div class="tiny faint" style="margin-top:6px">
           ${s.musicFileName
-            ? `Playing <b>${esc(s.musicFileName)}</b> from this device.`
+            ? `Playing <b>${esc(s.musicFileName)}</b>${s.musicFileSize ? ` · ${fmtBytes(s.musicFileSize)}` : ""} from this device.`
             : `No file chosen${themeMusic.playable() ? " — using the theme's built-in track" : ""}.`}
-          <br>Audio you choose is stored <b>only in this browser</b> — clearing site data or moving to another device loses it.
+          <br>Any audio file works — MP3, M4A/AAC, WAV, OGG. Stored <b>only in this browser</b>; clearing site data or moving to another device loses it.
         </div>
+        ${themeMusic.localBroken ? `<div class="tiny" style="color:var(--neg);margin-top:4px">This file won't decode in your browser. Try re-saving it as MP3 or M4A.</div>` : ""}
         ${DB.fallback ? `<div class="tiny" style="color:var(--warn);margin-top:4px">This browser has no IndexedDB, so a local music file can't be stored here.</div>` : ""}
       </div>
     </div>` : ""}
@@ -3106,6 +3115,7 @@ function settingsHTML(){
     <p class="tiny faint" style="margin-bottom:10px">If the app ever loads blank or looks stuck on an old version: this clears the
       offline cache + service worker and reloads. Your data (transactions, goals, settings) is <b>not</b> touched.</p>
     <button class="btn block" id="btnReset">Clear cache &amp; reload</button>
+    ${(THEME_REG[currentThemeId()]||{}).music ? `<div class="tiny faint mono" style="margin-top:10px">${musicDiag()}</div>` : ""}
   </div>
 
   <div class="card">
@@ -3156,8 +3166,8 @@ FULL.addEventListener("click", async (e) => {
     await refresh(); toast("Saved"); openFull(settingsHTML());
   }
   if (e.target.id === "setSound"){ await DB.setMeta("soundOn", !S.settings.soundOn); await refresh(); openFull(settingsHTML()); }
-  if (e.target.id === "setMusicToggle"){ await themeMusic.toggle(); const b = document.getElementById("setMusicToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; }
-  if (e.target.id === "btnPickMusic"){ const inp = document.getElementById("musicFilePick"); if (inp) inp.click(); return; }
+  if (e.target.id === "setMusicToggle"){ themeMusic.toggle(); const b = document.getElementById("setMusicToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; return; }
+  // "Choose music file" is a real <label for="musicFilePick"> — pointer/touch needs NO JS (the only pattern iOS honours).
   if (e.target.id === "btnRemoveMusic"){ await themeMusic.removeLocalFile(); await refresh(); openFull(settingsHTML()); return; }
   if (e.target.id === "btnExport"){ await doExport(); openFull(settingsHTML()); }
   if (e.target.id === "btnImport"){ document.getElementById("fileImport").click(); }
@@ -3166,11 +3176,26 @@ FULL.addEventListener("click", async (e) => {
 FULL.addEventListener("input", (e) => {
   if (e.target.id === "setMusicVol") themeMusic.setVolume(e.target.value);
 });
+// keyboard a11y for the file-pick <label> (pointer/touch already works natively via `for=`)
+FULL.addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " " || e.key === "Spacebar") &&
+      e.target.classList && e.target.classList.contains("filepick")){
+    e.preventDefault();
+    const inp = document.getElementById("musicFilePick");
+    if (inp) inp.click();                                 // synchronous, inside the keydown gesture
+  }
+});
 FULL.addEventListener("change", async (e) => {
   if (e.target.id === "musicFilePick"){
     const f = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (f){ await themeMusic.setLocalFile(f); await refresh(); openFull(settingsHTML()); }
+    e.target.value = "";                                  // let the same file be re-picked later
+    if (!f){
+      toast("No file selected. If files looked greyed out, re-save the track as MP3 or M4A and try again.");
+      return;
+    }
+    await themeMusic.setLocalFile(f);
+    await refresh();
+    openFull(settingsHTML());
     return;
   }
   if (e.target.id === "fileImport" && e.target.files[0]){
@@ -4448,12 +4473,16 @@ const MUSIC_FILE_MAX = 25 * 1024 * 1024;   // 25 MB — one song, safe for mobil
 
 const themeMusic = {
   el: null, wired: false, missing: false, started: false, seekPending: null, probed: "", objUrl: null,
+  localBlob: null,          // the File/Blob, held in memory so first-play needs NO await before .play() (iOS)
+  decodeOk: null,           // true | false | null(unknown) — from a silent metadata probe
   spec(){ return (THEME_REG[currentThemeId()] || {}).music || null; },
   hasLocal(){ return !!(S.settings && S.settings.musicFileName) && !DB.fallback; },
+  get localBroken(){ return this.hasLocal() && this.decodeOk === false; },
   async probe(){                                          // cheap check so a missing declared src hides the control up front
     const sp = this.spec();
     if (!sp || this.started) return;
-    if (this.hasLocal()){ this.missing = false; this.render(); return; }
+    if (this.hasLocal() && this.decodeOk !== false){ this.missing = false; this.render(); return; }
+    // no local file, OR a broken one -> we depend on the theme's declared src; is it actually there?
     if (this.probed === sp.src) return;
     this.probed = sp.src;
     try {
@@ -4472,41 +4501,68 @@ const themeMusic = {
     this._revoke();
     this.started = false; this.seekPending = null;
   },
-  async _resolveSrc(){                                    // local file wins; else the theme's declared src
-    if (this.hasLocal()){
-      try {
-        const f = await DB.meta("musicFile", null);
-        if (f && (f.size == null || f.size > 0)){
-          this._revoke();
-          this.objUrl = URL.createObjectURL(f);
-          return this.objUrl;
-        }
-      } catch(_){}
+  _srcNow(){                                              // SYNCHRONOUS: a good local blob wins, else the theme's declared src
+    if (this.localBlob && this.decodeOk !== false){
+      try { this._revoke(); this.objUrl = URL.createObjectURL(this.localBlob); return this.objUrl; } catch(_){}
     }
     const sp = this.spec();
     return sp ? sp.src : null;
   },
+  /* silent metadata probe: does the browser's audio engine accept this file's container/codec? no sound, no gesture */
+  _decodeCheck(blob){
+    return new Promise((resolve) => {
+      let a = new Audio(), url = "", done = false;
+      const finish = (v) => { if (done) return; done = true; clearTimeout(to);
+        try { a.removeAttribute("src"); a.load(); } catch(_){}
+        if (url) try { URL.revokeObjectURL(url); } catch(_){}
+        a = null; resolve(v); };
+      const to = setTimeout(() => finish(null), 6000);   // couldn't confirm either way
+      try {
+        a.preload = "metadata"; a.muted = true;
+        a.addEventListener("loadedmetadata", () => finish(true));
+        a.addEventListener("canplay", () => finish(true));
+        a.addEventListener("error", () => finish(false));
+        url = URL.createObjectURL(blob);
+        a.src = url; a.load();
+      } catch(_) { finish(false); }
+    });
+  },
   async setLocalFile(file){
-    if (DB.fallback){ toast("This browser can't store a local music file"); return false; }
-    if (!file) return false;
-    if (file.type && !/^audio\//i.test(file.type)){ toast("Pick an audio file"); return false; }
+    if (DB.fallback){ toast("This browser can't store a local music file (no IndexedDB)"); return false; }
+    if (!file){ toast("No file came back from the picker — try a different file or re-save it as MP3"); return false; }
     if (file.size > MUSIC_FILE_MAX){ toast("Audio file too large (max 25 MB)"); return false; }
+    // NO MIME-string gate — a valid MP3 from AirDrop/email often has an empty or odd type. Let the audio engine decide.
     try {
       await DB.setMeta("musicFile", file);
       await DB.setMeta("musicFileName", file.name || "audio file");
-    } catch(e){ toast("Couldn't save that file"); return false; }
+      await DB.setMeta("musicFileSize", file.size || 0);
+      await DB.setMeta("musicFileType", file.type || "");
+    } catch(e){ toast("Couldn't save that file to this device"); return false; }
     S.settings.musicFileName = file.name || "audio file";
-    this.missing = false; this.probed = "";
+    S.settings.musicFileSize = file.size || 0;
+    S.settings.musicFileType = file.type || "";
+    this.localBlob = file;
+    this.missing = false; this.probed = ""; this.decodeOk = null;
     const wasPlaying = this.playing();
     this._resetPlayback();
     this.render();
-    toast("Music file saved — stays on this device only");
-    if (wasPlaying) this.toggle();
-    return true;
+    // report the REAL outcome, not a MIME guess
+    this.decodeOk = await this._decodeCheck(file);
+    if (this.decodeOk === false){ this.probed = ""; await this.probe(); }   // learn if the declared-src fallback works
+    this.render();
+    if (this.decodeOk === false){
+      toast(`Saved, but your browser can't decode this ${musicExt(file)} file. Try MP3 or M4A/AAC.`);
+    } else {
+      toast(`Music saved: ${file.name || "audio file"} (${fmtBytes(file.size||0)}). Tap Play.`);
+      if (wasPlaying) this.toggle();
+    }
+    return this.decodeOk !== false;
   },
   async removeLocalFile(){
-    try { await DB.setMeta("musicFile", null); await DB.setMeta("musicFileName", null); } catch(_){}
-    S.settings.musicFileName = null;
+    try { await DB.setMeta("musicFile", null); await DB.setMeta("musicFileName", null);
+      await DB.setMeta("musicFileSize", 0); await DB.setMeta("musicFileType", ""); } catch(_){}
+    S.settings.musicFileName = null; S.settings.musicFileSize = 0; S.settings.musicFileType = "";
+    this.localBlob = null; this.decodeOk = null;
     this._resetPlayback();
     this.missing = false; this.probed = "";
     this.render();
@@ -4523,7 +4579,7 @@ const themeMusic = {
       if (Math.abs(this.el.currentTime - want) < 1.5) this.seekPending = null;
     } catch(_){}
   },
-  attach(){
+  async attach(){
     this.el = document.getElementById("themeAudio");
     if (!this.el) return;
     this.el.volume = U.clamp(Number(S.settings.musicVolume ?? 0.5), 0, 1);
@@ -4547,36 +4603,62 @@ const themeMusic = {
       });
       this.el.addEventListener("error", () => {
         if (!this.el.getAttribute("src")) return;
-        if (this.hasLocal()){ this._resetPlayback(); toast("That audio file wouldn't play"); }
+        if (this.hasLocal()){ this.decodeOk = false; this._resetPlayback(); toast("That audio file wouldn't play in this browser"); }
         else { this.missing = true; this.started = false; }
         this.render();
       });
     }
     this.render();
     this.probe();
+    // eagerly load the stored Blob so the FIRST tap-to-play has no await before .play() (iOS gesture rule)
+    if (this.hasLocal() && !this.localBlob){
+      try {
+        const f = await DB.meta("musicFile", null);
+        if (f && (f.size == null || f.size > 0)){
+          this.localBlob = f;
+          this.decodeOk = await this._decodeCheck(f);
+          this.render();
+        }
+      } catch(_){}
+    }
   },
   playing(){ return !!(this.el && this.started && !this.el.paused); },
-  playable(){ return this.hasLocal() || (!!this.spec() && !this.missing); },
-  async toggle(){
+  playable(){
+    if (this.hasLocal() && this.decodeOk !== false) return true;   // a good local file
+    return !!this.spec() && !this.missing;                         // else the theme's declared src, if reachable
+  },
+  toggle(){                                               // NOT async: nothing may await before .play() in the tap
     const sp = this.spec();
     if (!sp || !this.el || !this.playable()) return;
     if (this.playing()){ this.el.pause(); this.render(); return; }
     if (!this.started){
-      const url = await this._resolveSrc();               // local blob URL, or the theme's declared src
+      const url = this._srcNow();                         // synchronous — blob URL or declared src
       if (!url){ this.render(); return; }
       this.el.src = url;
       this.started = true;
     }
     this.seekPending = sp.startAt || 0;
     this._applyStart();
-    try {
-      await this.el.play();
+    const t0 = this.el.currentTime || 0;
+    const usedLocalBlob = !!this.objUrl && this.el.src === this.objUrl;
+    let p;
+    try { p = this.el.play(); } catch(err){ p = Promise.reject(err); }
+    Promise.resolve(p).then(() => {
       this._applyStart();
-    } catch(err){
-      if (!this.hasLocal()) this.missing = true;          // declared src 404 / decode / autoplay-blocked
-      else toast("Couldn't play that audio file");
+      this.render();
+      // iOS "silent switch": play() succeeded but no sound + the clock never advanced -> ringer switch is muted
+      setTimeout(() => {
+        if (this.el && !this.el.paused && (this.el.currentTime - t0) < 0.2){
+          toast("Playing — but if you hear nothing, flip your iPhone's ring/silent switch on.");
+        }
+      }, 1800);
+    }).catch(() => {
+      if (usedLocalBlob){ this.decodeOk = false; toast("That audio file wouldn't play — try MP3 or M4A/AAC"); }
+      else this.missing = true;                           // declared src 404 / autoplay-blocked
       this._resetPlayback();
-    }
+      this.probed = ""; this.probe();                     // re-evaluate what's still available
+      this.render();
+    });
     this.render();
   },
   setVolume(v){
@@ -4606,6 +4688,22 @@ const themeMusic = {
     if (playRow) playRow.hidden = !show;
   },
 };
+function musicExt(file){
+  const n = (file && file.name || "").toLowerCase();
+  const m = /\.([a-z0-9]+)$/.exec(n);
+  if (m) return m[1].toUpperCase();
+  const t = (file && file.type || "").split("/")[1];
+  return t ? t.toUpperCase() : "audio";
+}
+/* Settings → Troubleshooting one-liner: does a Blob exist, how big, and does the audio engine accept it? */
+function musicDiag(){
+  const s = S.settings;
+  if (!s.musicFileName) return "Theme music: no local file · " + (themeMusic.playable() ? "using the theme's built-in track" : "no source (control hidden)");
+  const state = themeMusic.decodeOk === false ? "audio element: CANNOT decode"
+    : themeMusic.decodeOk === true ? "audio element: reports playable"
+    : "audio element: not yet checked";
+  return `Theme music: Blob present · ${fmtBytes(s.musicFileSize || 0)}${s.musicFileType ? " · " + esc(s.musicFileType) : ""} · ${state}`;
+}
 
 /* ---- gamification: only "live" when the active theme opts in via module:"gamification" ---- */
 function gameActive(){ return (THEME_REG[currentThemeId()] || {}).module === "gamification"; }

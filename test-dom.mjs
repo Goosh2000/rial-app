@@ -487,8 +487,24 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   // volume slider + "Choose music file" in Settings
   win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings open");
   ok("Settings: Monarch music volume slider present", !!$("#setMusicVol"));
-  ok("Settings: 'Choose music file' picker present", !!$("#btnPickMusic") && !!$("#musicFilePick"));
+  {
+    const lbl = $('label.filepick[for="musicFilePick"]');
+    const inp = $("#musicFilePick");
+    ok("Settings: 'Choose music file' is a <label for> (not a JS button)", !!lbl && !!inp && lbl.tagName === "LABEL");
+    ok("file input is NOT hidden (iOS refuses display:none pickers)", inp && !inp.hidden && !/display:\s*none/.test(win.getComputedStyle(inp).display || ""));
+    ok("file input is visually hidden via CSS, still in layout", inp && win.getComputedStyle(inp).position === "absolute" && parseFloat(win.getComputedStyle(inp).opacity) === 0);
+    ok("file input accept is broadened beyond audio/*", /\.mp3/.test(inp.getAttribute("accept")) && /\.m4a/.test(inp.getAttribute("accept")) && /audio\/\*/.test(inp.getAttribute("accept")));
+    ok("label is keyboard-focusable", lbl.getAttribute("tabindex") === "0");
+    const h = parseFloat(win.getComputedStyle(lbl).minHeight);
+    ok("label has a >=44px touch target", h >= 44, String(h));
+    // Enter on the focused label opens the picker (synchronously)
+    let opened = false; const realClick = inp.click; inp.click = () => { opened = true; };
+    lbl.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    inp.click = realClick;
+    ok("Enter on the label triggers the file input", opened);
+  }
   ok("Settings: warns the file lives only in this browser", /only in this browser/i.test($("#full").textContent));
+  ok("Settings: Troubleshooting shows a music diagnostic line", /Theme music:/i.test($("#full").textContent));
   ok("Settings: no 'Remove music file' until one is chosen", !$("#btnRemoveMusic"));
   setVal($("#setMusicVol"), "0.8");
   await sleep(30);
@@ -510,7 +526,7 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     win.eval('go("home")'); await sleep(40);
     ok("declared src 404 + no local file -> header control hidden", !$("#musicToggle") || $("#musicToggle").hidden);
     win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings");
-    ok("declared src 404 -> play row hidden but the file picker still shows", $("#monarchMusicPlay") && $("#monarchMusicPlay").hidden && !!$("#btnPickMusic"));
+    ok("declared src 404 -> play row hidden but the file picker still shows", $("#monarchMusicPlay") && $("#monarchMusicPlay").hidden && !!$('label.filepick[for="musicFilePick"]'));
     win.eval("closeFull()"); await sleep(150);
     win.fetch = realFetch;
     await win.eval("(async () => { themeMusic.probed=''; themeMusic.missing=false; await themeMusic.probe(); })()");

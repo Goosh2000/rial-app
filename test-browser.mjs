@@ -277,17 +277,62 @@ const failedRequests = [];
     await new Promise((r) => setTimeout(r, 400));
     await page.evaluate(() => openOverlay("settings"));
     await new Promise((r) => setTimeout(r, 200));
-    const ui = await page.evaluate(() => ({
-      pickBtn: !!document.getElementById("btnPickMusic"),
-      fileInput: !!document.getElementById("musicFilePick"),
-      warns: /only in this browser/i.test(document.getElementById("full").textContent),
-      removeBtn: !!document.getElementById("btnRemoveMusic"),
-    }));
-    ok("music: Settings offers 'Choose music file'", ui.pickBtn && ui.fileInput, JSON.stringify(ui));
+    const ui = await page.evaluate(() => {
+      const lbl = document.querySelector('label.filepick[for="musicFilePick"]');
+      const inp = document.getElementById("musicFilePick");
+      const cs = inp ? getComputedStyle(inp) : null;
+      return {
+        isLabel: !!lbl && lbl.tagName === "LABEL",
+        inputPresent: !!inp,
+        inputNotDisplayNone: cs ? cs.display !== "none" : false,
+        inputVisuallyHidden: cs ? (cs.position === "absolute" && parseFloat(cs.opacity) === 0) : false,
+        acceptBroad: inp ? (/audio\/\*/.test(inp.accept) && /\.mp3/.test(inp.accept) && /\.m4a/.test(inp.accept) && /\.wav/.test(inp.accept)) : false,
+        labelFocusable: lbl ? lbl.getAttribute("tabindex") === "0" : false,
+        labelTarget: lbl ? Math.round(lbl.getBoundingClientRect().height) : 0,
+        warns: /only in this browser/i.test(document.getElementById("full").textContent),
+        diag: /Theme music:/i.test(document.getElementById("full").textContent),
+        removeBtn: !!document.getElementById("btnRemoveMusic"),
+      };
+    });
+    ok("music: 'Choose music file' is a real <label for> (iOS-safe)", ui.isLabel && ui.inputPresent, JSON.stringify(ui));
+    ok("music: file input is NOT display:none", ui.inputNotDisplayNone, JSON.stringify(ui));
+    ok("music: file input is visually hidden via CSS, kept in layout", ui.inputVisuallyHidden, JSON.stringify(ui));
+    ok("music: accept covers audio/* + .mp3/.m4a/.wav", ui.acceptBroad, JSON.stringify(ui));
+    ok("music: label is keyboard-focusable with a >=44px target", ui.labelFocusable && ui.labelTarget >= 44, JSON.stringify(ui));
     ok("music: Settings warns the file is browser-only", ui.warns, JSON.stringify(ui));
+    ok("music: Troubleshooting shows a music diagnostic", ui.diag, JSON.stringify(ui));
     ok("music: no 'Remove' button before a file is chosen", !ui.removeBtn, JSON.stringify(ui));
 
-    // pick a real audio file: wrap the locally-served track as a File and store it
+    // a file with an EMPTY type (as AirDrop/email MP3s often are) must still be accepted
+    const emptyType = await page.evaluate(async () => {
+      const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
+      const file = new File([buf], "airdropped.mp3", { type: "" });   // no MIME
+      const res = await themeMusic.setLocalFile(file);
+      return { res, name: await DB.meta("musicFileName", null), decodeOk: themeMusic.decodeOk, hasLocal: themeMusic.hasLocal() };
+    });
+    ok("music: a file with empty MIME type is accepted (validated by decode, not MIME)", emptyType.res !== false && emptyType.name === "airdropped.mp3" && emptyType.hasLocal, JSON.stringify(emptyType));
+    ok("music: decode check reports the file as playable", emptyType.decodeOk === true, JSON.stringify(emptyType));
+
+    // a non-audio blob must FAIL the decode check, be reported, and never be handed to the player
+    const bogus = await page.evaluate(async () => {
+      const file = new File([new Uint8Array(4096).fill(65)], "not-audio.mp3", { type: "audio/mpeg" });
+      const res = await themeMusic.setLocalFile(file);
+      const src = themeMusic._srcNow();
+      openOverlay("settings");
+      await new Promise((r) => setTimeout(r, 150));
+      return {
+        res, decodeOk: themeMusic.decodeOk, broken: themeMusic.localBroken,
+        srcSkipsBlob: !/^blob:/.test(src || ""),
+        uiWarns: /won't decode|can'?t decode|cannot decode/i.test(document.getElementById("full").textContent),
+        diag: (document.getElementById("full").textContent.match(/Theme music:[^\n]*/) || [""])[0],
+      };
+    });
+    ok("music: an undecodable file is reported, not silently accepted", bogus.res === false && bogus.decodeOk === false && bogus.broken, JSON.stringify(bogus));
+    ok("music: the broken blob is never handed to the audio element", bogus.srcSkipsBlob, JSON.stringify(bogus));
+    ok("music: Settings names the decode failure + diagnostic shows CANNOT decode", bogus.uiWarns && /CANNOT decode/i.test(bogus.diag), JSON.stringify(bogus));
+    await page.evaluate(() => { try { closeFull(); } catch (_) {} });
+
+    // restore a good file for the rest of the flow
     const stored = await page.evaluate(async () => {
       const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
       const file = new File([buf], "my song.mp3", { type: "audio/mpeg" });
@@ -296,13 +341,20 @@ const failedRequests = [];
       return {
         okSet,
         name: await DB.meta("musicFileName", null),
+        size: await DB.meta("musicFileSize", 0),
         hasLocal: themeMusic.hasLocal(),
         blobIsBlob: blob instanceof Blob && blob.size > 1000,
-        settingsName: S.settings.musicFileName,
       };
     });
-    ok("music: setLocalFile stores the Blob + name in IndexedDB", stored.okSet && stored.blobIsBlob && stored.name === "my song.mp3", JSON.stringify(stored));
+    ok("music: setLocalFile stores the Blob + name + size in IndexedDB", stored.okSet && stored.blobIsBlob && stored.name === "my song.mp3" && stored.size > 1000, JSON.stringify(stored));
     ok("music: hasLocal() true once a file is stored", stored.hasLocal, JSON.stringify(stored));
+
+    // the tap path must be synchronous up to .play() — toggle() is not async and holds the Blob in memory
+    const syncPath = await page.evaluate(() => ({
+      notAsync: themeMusic.toggle.constructor.name !== "AsyncFunction",
+      blobInMemory: !!themeMusic.localBlob,
+    }));
+    ok("music: toggle() is synchronous up to play() (no await eats the iOS gesture)", syncPath.notAsync && syncPath.blobInMemory, JSON.stringify(syncPath));
 
     // it plays from a blob: URL and honours the theme's startAt (33s)
     const played = await page.evaluate(async () => {
@@ -324,20 +376,22 @@ const failedRequests = [];
     ok("music: Settings shows the chosen file name", /my song\.mp3/.test(withFile.text), withFile.text.slice(0, 200));
     ok("music: Settings offers 'Remove music file'", withFile.removeBtn);
 
-    // survives a full reload (persisted in IndexedDB)
+    // survives a full reload (persisted in IndexedDB), and the Blob is re-loaded into memory + re-decode-checked
     await page.reload({ waitUntil: "networkidle0" });
-    await new Promise((r) => setTimeout(r, 700));
-    const afterReload = await page.evaluate(async () => {
-      await pickThemeManually("monarch");
-      await new Promise((r) => setTimeout(r, 300));
-      return {
-        name: S.settings.musicFileName,
-        hasLocal: themeMusic.hasLocal(),
-        playable: themeMusic.playable(),
-        btnVisible: (() => { const b = document.getElementById("musicToggle"); return !!b && !b.hidden; })(),
-      };
-    });
-    ok("music: picked file persists across a reload", afterReload.name === "my song.mp3" && afterReload.hasLocal, JSON.stringify(afterReload));
+    await new Promise((r) => setTimeout(r, 900));
+    await page.evaluate(async () => { await pickThemeManually("monarch"); });
+    await page.waitForFunction(() => themeMusic.decodeOk !== null && !!themeMusic.localBlob, { timeout: 8000 }).catch(() => {});
+    const afterReload = await page.evaluate(() => ({
+      name: S.settings.musicFileName,
+      size: S.settings.musicFileSize,
+      hasLocal: themeMusic.hasLocal(),
+      blobInMemory: !!themeMusic.localBlob,
+      decodeOk: themeMusic.decodeOk,
+      playable: themeMusic.playable(),
+      btnVisible: (() => { const b = document.getElementById("musicToggle"); return !!b && !b.hidden; })(),
+    }));
+    ok("music: picked file persists across a reload (name + size)", afterReload.name === "my song.mp3" && afterReload.size > 1000 && afterReload.hasLocal, JSON.stringify(afterReload));
+    ok("music: Blob re-loaded into memory + re-verified after reload", afterReload.blobInMemory && afterReload.decodeOk === true, JSON.stringify(afterReload));
     ok("music: control is available after reload", afterReload.playable && afterReload.btnVisible, JSON.stringify(afterReload));
 
     // Remove music file -> back to the declared-src fallback
