@@ -4499,7 +4499,7 @@ const themeMusic = {
     this._resetPlayback();
     this.missing = false; this.probed = "";
     this.render();
-    this.probe();                                         // fall back to the declared src (may 404 -> hidden)
+    await this.probe();                                   // fall back to the declared src (may 404 -> hidden)
     toast("Music file removed");
   },
   _applyStart(){                                          // seek to startAt once the media can honour it
