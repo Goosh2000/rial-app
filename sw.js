@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "19";  // v19: add Null (terminal green, JetBrains Mono) and Khanjar (navy/gold, Amiri) themes
+const SW_VERSION = "20";  // v20: streaks count real calendar days (gap detection, firstUseDate, neutral no-plan days)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

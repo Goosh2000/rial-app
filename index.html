@@ -650,7 +650,7 @@ const DB = (() => {
       const out = { app:"rial", version:VERSION, exportedAt:new Date().toISOString(), meta:{}, data:{} };
       for (const s of STORES) out.data[s] = await api.getAll(s);
       const keys = ["settings","theme","csvMapping","lastBackup","onboarded",
-                    "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","icsExportedAt",
+                    "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","streakEverScored","firstUseDate","icsExportedAt",
                     "themeSchedule","themeManual","userThemes",
                     "smsParserPatterns","merchantRules","allowanceFloor","allowanceStreak","allowanceStreakDate",
                     "game","musicVolume"];
@@ -698,6 +698,8 @@ async function seedIfNeeded(){
   if ((await DB.meta("merchantRules")) == null) await DB.setMeta("merchantRules", SmsParser.DEFAULT_MERCHANT_RULES);
   if ((await DB.meta("theme")) == null) await DB.setMeta("theme", "midnight");
   if ((await DB.meta("soundOn")) == null) await DB.setMeta("soundOn", false);
+  // the day tracking begins — nothing before this counts toward any streak or history
+  if ((await DB.meta("firstUseDate")) == null) await DB.setMeta("firstUseDate", U.ymd());
 }
 
 /* in-memory cache of frequently read collections */
@@ -723,6 +725,8 @@ async function refresh(){
     soundOn: await DB.meta("soundOn", false),
     lastBackup: await DB.meta("lastBackup", null),
     streak: await DB.meta("streak", 0),
+    firstUseDate: await DB.meta("firstUseDate", null),
+    streakEverScored: await DB.meta("streakEverScored", false),
     csvMapping: await DB.meta("csvMapping", null),
     icsExportedAt: await DB.meta("icsExportedAt", null),
     icsSignature: await DB.meta("icsSignature", null),
@@ -916,6 +920,15 @@ const F = {
   spentOn(ymd){
     return U.sum(S.tx.filter(t => U.ymd(new Date(t.ts)) === ymd && (t.type === "expense" || t.type === "transfer_out")), t => t.amount);
   },
+  /* how a single calendar day scored against its own daily allowance:
+   *   "over"    — spend exceeded that day's allowance -> breaks the streak
+   *   "ok"      — spend stayed within it              -> advances the streak
+   *   "neutral" — no monthly plan for that day, nothing to measure -> holds */
+  dayResult(ymd){
+    const al = F.dailyAllowance(new Date(U.parseYMD(ymd)));
+    if (!al.configured) return "neutral";
+    return F.spentOn(ymd) <= al.base + 1 ? "ok" : "over";
+  },
 
   /* --- daily allowance with rolling 7-day correction --- */
   dailyAllowance(now = new Date()){
@@ -1053,7 +1066,7 @@ SCREENS.home = () => {
   const inc = F.incomeThisMonth(mk), out = F.spentThisMonth(mk), net = inc - out;
   const up = F.upcoming(7);
   const roundup = F.roundupSaved(mk);
-  const streak = S.settings.streak || 0;
+  const sd = streakDisplay();
   const al = F.dailyAllowance();
   const multiAcct = S.accounts.length > 1;
   return `
@@ -1101,8 +1114,8 @@ SCREENS.home = () => {
 
   <div class="row" style="gap:10px">
     <div class="card tight" style="flex:1;text-align:center">
-      <div class="mono" style="font-size:22px;font-weight:750">${streak}</div>
-      <div class="tiny faint">day no-overspend streak</div>
+      <div class="mono" style="font-size:${sd.tracked?"22px":"14px"};font-weight:750">${sd.text}</div>
+      <div class="tiny faint">${sd.tracked ? "day no-overspend streak" : "no-overspend streak"}</div>
     </div>
     <div class="card tight" style="flex:1;text-align:center">
       <div class="mono" style="font-size:22px;font-weight:750;color:var(--pos)">${U.fmt(roundup)}</div>
@@ -1727,27 +1740,48 @@ function bounceAdd(){ const b = document.getElementById("addBtn"); b.style.trans
 
 document.getElementById("addBtn").addEventListener("click", () => { draft = newDraft(); openKeypad(); });
 
-/* streak: increment when a day passes with spend <= safe-to-spend, else reset */
+/* Streak = consecutive real calendar days that stayed within that day's allowance.
+ * Walks every day since it was last evaluated (so a 5-day gap is scored from actual
+ * transaction history, not assumed). Days before firstUseDate and days with no plan
+ * are never counted. `today` isn't scored until it ends. */
 async function updateStreak(){
   const today = U.ymd();
+  const first = await DB.meta("firstUseDate", today);
+  if (today < first) return;                              // clock moved backwards — do nothing
   const last = await DB.meta("streakDate", null);
-  if (last === today) return;
-  const sts = F.safeToSpendToday();
+  if (last === today) return;                             // already caught up today
+
   let streak = await DB.meta("streak", 0);
-  streak = sts.perDay >= 0 ? streak + 1 : 0;
-  await DB.setMeta("streak", streak); await DB.setMeta("streakDate", today);
-  S.settings.streak = streak;
-  // allowance streak: was yesterday within its daily allowance?
-  const yYmd = U.ymd(new Date(Date.now() - 86400000));
-  if ((await DB.meta("allowanceStreakDate", null)) !== today){
-    const al = F.dailyAllowance();
-    let aStreak = await DB.meta("allowanceStreak", 0);
-    const yesterdayWithin = F.spentOn(yYmd) <= al.base + 1;
-    aStreak = yesterdayWithin ? aStreak + 1 : 0;
-    await DB.setMeta("allowanceStreak", aStreak);
-    await DB.setMeta("allowanceStreakDate", today);
-    S.settings.allowanceStreak = aStreak;
+  let aStreak = await DB.meta("allowanceStreak", 0);
+  let everScored = await DB.meta("streakEverScored", false);
+
+  // first day to (re-)evaluate: the day after `last`, or firstUseDate on the very first run
+  let cursor = last ? U.ymd(new Date(U.parseYMD(last) + 86400000)) : first;
+  if (cursor < first) cursor = first;
+
+  let guard = 0;
+  while (cursor < today && guard++ < 800){
+    const r = F.dayResult(cursor);
+    if (r === "over"){ streak = 0; aStreak = 0; everScored = true; }
+    else if (r === "ok"){ streak += 1; aStreak += 1; everScored = true; }
+    // "neutral" (no plan that day) -> streak untouched
+    cursor = U.ymd(new Date(U.parseYMD(cursor) + 86400000));
   }
+
+  await DB.setMeta("streak", streak);
+  await DB.setMeta("streakDate", today);
+  await DB.setMeta("allowanceStreak", aStreak);
+  await DB.setMeta("allowanceStreakDate", today);
+  await DB.setMeta("streakEverScored", everScored);
+  S.settings.streak = streak;
+  S.settings.allowanceStreak = aStreak;
+  S.settings.streakEverScored = everScored;
+}
+/* what the streak tile should show: a number once real days have been scored, else a note */
+function streakDisplay(){
+  const s = S.settings || {};
+  if (s.streakEverScored) return { text: String(s.streak || 0), tracked: true };
+  return { text: "not tracked yet", tracked: false };
 }
 
 /* optional sound */
@@ -3183,7 +3217,7 @@ function settingsHTML(){
     return `
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">${esc(themeName(active))}</h3>
-    ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${s.streak||0} day${(s.streak||0)===1?"":"s"}</div>` : ""}
+    ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${streakDisplay().tracked ? streakDisplay().text + " day" + (streakDisplay().text==="1"?"":"s") : "streak not tracked yet"}</div>` : ""}
     ${reg.music ? `<div id="monarchMusicRow">
       <div id="monarchMusicPlay"${themeMusic.playable()?"":" hidden"}>
         <div class="row between" style="margin-bottom:8px"><span class="tiny">Theme music</span>
@@ -3261,6 +3295,7 @@ function settingsHTML(){
   </div>
 
   <div class="card">
+    ${s.firstUseDate ? `<div class="tiny faint">Tracking since ${new Date(U.parseYMD(s.firstUseDate)).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})} — streaks and history are measured from this date.</div>` : ""}
     <div class="tiny faint">Storage engine: ${DB.fallback ? "localStorage (fallback)" : "IndexedDB"}</div>
     <div class="tiny faint">Rial v1 · offline-first · no server · SW ${swState()}</div>
   </div>
@@ -5023,7 +5058,7 @@ function gamePanelHTML(){
   const g = S.settings.game || { xp: 0, quests: { ymd: "", done: [] } };
   const lv = levelFor(g.xp);
   const done = (g.quests && g.quests.ymd === U.ymd()) ? (g.quests.done || []) : [];
-  const streak = S.settings.streak || 0;
+  const sd = streakDisplay();
   const ctx = questCtx();
   const quests = todaysQuests().map(q => {
     const d = done.includes(q.id);
@@ -5041,7 +5076,7 @@ function gamePanelHTML(){
         <div class="gp-lv mono">LV <span data-count="${lv.level}" data-count-fmt="int">${lv.level}</span></div>
         <div class="tiny faint">Monarch · daily quests</div>
       </div>
-      <div class="gp-streak mono" title="no-overspend streak">${svgIcon("flame")} ${streak}<span class="tiny faint"> day${streak===1?"":"s"}</span></div>
+      <div class="gp-streak mono" title="no-overspend streak">${svgIcon("flame")} ${sd.tracked ? `${sd.text}<span class="tiny faint"> day${sd.text==="1"?"":"s"}</span>` : `<span class="tiny faint">not tracked yet</span>`}</div>
     </div>
     <div class="xpbar"><i style="width:${lv.pct}%"></i></div>
     <div class="tiny faint mono" style="margin-top:4px">
@@ -5106,6 +5141,7 @@ async function boot(){
   themeMusic.attach();                    // wires the <audio>; never autoplays
   startScheduler();
   await rollRecurring();
+  await updateStreak();                   // score every real day since the app was last opened
   window.__rialReady = true;
   go("home");
   handleUrlParams();                      // ?sms= / ?view=add from an iOS Shortcut

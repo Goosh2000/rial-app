@@ -97,6 +97,7 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
   b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
   gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, questCtx, themeMusic,
+  updateStreak, streakDisplay,
   get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
@@ -432,6 +433,71 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   T.S.settings.monthlyIncome = 900000;
   ok("dailyAllowance: configured=true once monthly income is set", T.F.dailyAllowance().configured === true);
   T.S.settings.monthlyIncome = 0;
+
+  // ---- PART 1: streaks count REAL calendar days ----
+  {
+    const day = (offset) => T.U.ymd(new Date(Date.now() + offset * 86400000));
+    const setMeta = async (o) => { for (const k in o) await T.DB.setMeta(k, o[k]); };
+    // build a month's worth of tx: small daily spend so every day is well within allowance
+    const cleanHistory = (fromOffset, toOffset, dailyAmt) => {
+      T.S.tx = [];
+      for (let o = fromOffset; o <= toOffset; o++)
+        T.S.tx.push({ id: "t" + o, ts: T.U.parseYMD(day(o)), month: day(o).slice(0, 7), amount: dailyAmt, type: "expense", category: "Other" });
+    };
+
+    T.S.settings.monthlyIncome = 900000; T.S.plans = []; T.S.envelopes = [];
+
+    // dayResult: within allowance -> ok, over -> over, no plan -> neutral
+    cleanHistory(-8, -1, 300);
+    ok("dayResult: a within-allowance day is 'ok'", T.F.dayResult(day(-3)) === "ok");
+    T.S.tx.push({ id: "big", ts: T.U.parseYMD(day(-3)), month: day(-3).slice(0, 7), amount: 900000, type: "expense", category: "Other" });
+    ok("dayResult: an over-allowance day is 'over'", T.F.dayResult(day(-3)) === "over");
+    T.S.settings.monthlyIncome = 0;
+    ok("dayResult: a day with no plan is 'neutral'", T.F.dayResult(day(-3)) === "neutral");
+    T.S.settings.monthlyIncome = 900000;
+
+    // 1. a five-day gap with clean history advances by exactly the days elapsed
+    cleanHistory(-10, -1, 250);
+    await setMeta({ firstUseDate: day(-30), streakDate: day(-6), streak: 4, allowanceStreak: 4, streakEverScored: true });
+    await T.updateStreak();
+    eq("5-day clean gap: streak advances by the 5 elapsed days", T.S.settings.streak, 9);
+
+    // 2. a five-day gap containing one overspend resets, then advances from there
+    cleanHistory(-10, -1, 250);
+    T.S.tx.push({ id: "boom", ts: T.U.parseYMD(day(-3)), month: day(-3).slice(0, 7), amount: 900000, type: "expense", category: "Other" });
+    await setMeta({ firstUseDate: day(-30), streakDate: day(-6), streak: 4, allowanceStreak: 4, streakEverScored: true });
+    await T.updateStreak();
+    eq("5-day gap with an overspend: resets, then counts days -2 and -1", T.S.settings.streak, 2);
+
+    // 3. a no-plan period is neutral — the streak is unchanged, not incremented for nothing
+    cleanHistory(-10, -1, 250);
+    T.S.settings.monthlyIncome = 0;
+    await setMeta({ firstUseDate: day(-30), streakDate: day(-6), streak: 7, allowanceStreak: 7, streakEverScored: true });
+    await T.updateStreak();
+    eq("no-plan gap: streak held at 7 (never advanced for unmeasurable days)", T.S.settings.streak, 7);
+    T.S.settings.monthlyIncome = 900000;
+
+    // 4. nothing before firstUseDate is ever counted
+    cleanHistory(-10, -1, 250);
+    await setMeta({ firstUseDate: day(-2), streakDate: null, streak: 0, allowanceStreak: 0, streakEverScored: false });
+    await T.updateStreak();
+    eq("firstUseDate honoured: only days -2 and -1 scored, not the earlier clean history", T.S.settings.streak, 2);
+
+    // 5. no day is ever scored twice — a second call the same day is a no-op
+    const before = T.S.settings.streak;
+    await T.updateStreak();
+    eq("same-day re-evaluation is a no-op", T.S.settings.streak, before);
+
+    // streakDisplay: 'not tracked yet' until a real day has been scored
+    T.S.settings.streakEverScored = false;
+    ok("streakDisplay: 'not tracked yet' before any day is scored", T.streakDisplay().tracked === false && /not tracked/i.test(T.streakDisplay().text));
+    T.S.settings.streakEverScored = true; T.S.settings.streak = 5;
+    ok("streakDisplay: shows the number once days have been scored", T.streakDisplay().tracked === true && T.streakDisplay().text === "5");
+
+    ok("boot() evaluates the streak on open (gap detection)", /await updateStreak\(\)/.test(html.slice(html.indexOf("async function boot"))));
+    ok("the old perDay >= 0 streak rule is gone", !/streak = sts\.perDay >= 0/.test(html));
+    T.S.tx = []; T.S.settings.monthlyIncome = 0;
+  }
 
   // music controller: never touches the network before a tap
   eq("themeMusic starts un-started", T.themeMusic.started, false);
