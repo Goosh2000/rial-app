@@ -1,0 +1,25 @@
+{
+  "id": "khanjar",
+  "name": "Khanjar",
+  "scheme": "dark",
+  "tokens": {
+    "bg": "#0A0F1E",
+    "bg-elev": "#121A2E",
+    "bg-elev-2": "#1A2440",
+    "line": "#2A3554",
+    "text": "#F4EDDD",
+    "text-dim": "#B9A583",
+    "text-faint": "#8A7860",
+    "accent": "#D9A441",
+    "accent-ink": "#1A1206",
+    "pos": "#6FC28B",
+    "neg": "#D96B5B",
+    "warn": "#E8C15E",
+    "shadow": "0 10px 34px rgba(0,0,0,.55)",
+    "r-lg": "14px",
+    "r-md": "10px",
+    "r-sm": "6px"
+  },
+  "font": { "family": "Amiri" },
+  "decorativeCss": "[data-theme=\"khanjar\"] .card{background-image:linear-gradient(180deg,rgba(217,164,65,.045),transparent 55%)}[data-theme=\"khanjar\"] .pagehead{border-bottom:1px solid rgba(217,164,65,.22);padding-bottom:8px}[data-theme=\"khanjar\"] h1,[data-theme=\"khanjar\"] h2{letter-spacing:.01em}"
+}

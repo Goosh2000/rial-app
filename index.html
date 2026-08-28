@@ -87,6 +87,25 @@
   --r-md: 14px;
   --r-sm: 10px;
 }
+:root[data-theme="khanjar"]{
+  --bg: #0A0F1E;
+  --bg-elev: #121A2E;
+  --bg-elev-2: #1A2440;
+  --line: #2A3554;
+  --text: #F4EDDD;
+  --text-dim: #B9A583;
+  --text-faint: #8A7860;
+  --accent: #D9A441;
+  --accent-ink: #1A1206;
+  --pos: #6FC28B;
+  --neg: #D96B5B;
+  --warn: #E8C15E;
+  --shadow: 0 10px 34px rgba(0,0,0,.55);
+  --r-lg: 14px;
+  --r-md: 10px;
+  --r-sm: 6px;
+  --font-heading: "Amiri", "SF Pro Display", system-ui, sans-serif;
+}
 :root[data-theme="ki"]{
   --bg: #0B0705;
   --bg-elev: #17100A;
@@ -125,6 +144,25 @@
   --r-sm: 3px;
   --font-heading: "Orbitron", "Rajdhani", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
 }
+:root[data-theme="null"]{
+  --bg: #050807;
+  --bg-elev: #0A0F0C;
+  --bg-elev-2: #101712;
+  --line: #1B2A20;
+  --text: #C8FFD8;
+  --text-dim: #6FBF8A;
+  --text-faint: #47795A;
+  --accent: #3DFF88;
+  --accent-ink: #04120A;
+  --pos: #3DFF88;
+  --neg: #FF5555;
+  --warn: #FFD866;
+  --shadow: 0 0 0 1px rgba(61,255,136,.10), 0 6px 22px rgba(0,0,0,.7);
+  --r-lg: 2px;
+  --r-md: 2px;
+  --r-sm: 0px;
+  --font-heading: "JetBrains Mono", "SF Pro Display", system-ui, sans-serif;
+}
 :root[data-theme="paper"]{
   --bg: #f6f7f9;
   --bg-elev: #ffffff;
@@ -143,6 +181,9 @@
   --r-md: 14px;
   --r-sm: 10px;
 }
+
+/* khanjar decorative */
+[data-theme="khanjar"] .card{background-image:linear-gradient(180deg,rgba(217,164,65,.045),transparent 55%)}[data-theme="khanjar"] .pagehead{border-bottom:1px solid rgba(217,164,65,.22);padding-bottom:8px}[data-theme="khanjar"] h1,[data-theme="khanjar"] h2{letter-spacing:.01em}
 
 /* ki decorative */
 @keyframes ki-aura{0%,100%{opacity:.30}50%{opacity:.60}}[data-theme="ki"] .card{background-image:radial-gradient(120% 90% at 50% 0%,rgba(255,154,46,.10),transparent 65%)}[data-theme="ki"] .btn.primary,[data-theme="ki"] #addBtn{box-shadow:0 0 18px rgba(255,154,46,.45),0 0 44px rgba(255,154,46,.18);animation:ki-aura 2.6s ease-in-out infinite}[data-theme="ki"] h1{text-shadow:0 0 22px rgba(255,154,46,.35)}@media (prefers-reduced-motion:reduce){[data-theme="ki"] .btn.primary,[data-theme="ki"] #addBtn{animation:none}}
@@ -190,6 +231,9 @@
 @keyframes monarch-pulse{0%,100%{box-shadow:0 0 10px rgba(77,157,255,.4)}50%{box-shadow:0 0 20px rgba(77,157,255,.75)}}
 @keyframes monarch-questpop{0%{opacity:0;transform:scale(.9)}55%{opacity:1}100%{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){[data-theme="monarch"] .screen,[data-theme="monarch"] .sheet.open,[data-theme="monarch"] #questComplete .qc-inner,[data-theme="monarch"] #musicToggle.playing{animation:none}[data-theme="monarch"] .game-panel .xpbar > i{transition:none}}
+
+/* null decorative */
+@keyframes null-caret{0%,49%{opacity:1}50%,100%{opacity:0}}[data-theme="null"] .pagehead h1::after{content:"_";margin-left:.12em;color:#3DFF88;animation:null-caret 1.1s step-end infinite}[data-theme="null"] .card{border-left:2px solid rgba(61,255,136,.28)}[data-theme="null"] h1,[data-theme="null"] h2,[data-theme="null"] h3{text-transform:lowercase;letter-spacing:.02em}@media (prefers-reduced-motion:reduce){[data-theme="null"] .pagehead h1::after{animation:none}}
 /* THEMES-CSS:END */
 
 /* ---- [2] BASE / RESET -------------------------------------------------- */
@@ -3744,6 +3788,36 @@ const THEMES = {
     "music": null,
     "module": null
   },
+  "khanjar": {
+    "id": "khanjar",
+    "name": "Khanjar",
+    "scheme": "dark",
+    "bg": "#0A0F1E",
+    "tokens": {
+      "bg": "#0A0F1E",
+      "bg-elev": "#121A2E",
+      "bg-elev-2": "#1A2440",
+      "line": "#2A3554",
+      "text": "#F4EDDD",
+      "text-dim": "#B9A583",
+      "text-faint": "#8A7860",
+      "accent": "#D9A441",
+      "accent-ink": "#1A1206",
+      "pos": "#6FC28B",
+      "neg": "#D96B5B",
+      "warn": "#E8C15E",
+      "shadow": "0 10px 34px rgba(0,0,0,.55)",
+      "r-lg": "14px",
+      "r-md": "10px",
+      "r-sm": "6px"
+    },
+    "fontFamily": "Amiri",
+    "fontImports": [
+      "https://fonts.googleapis.com/css2?family=Amiri:wght@400;600;700&display=swap"
+    ],
+    "music": null,
+    "module": null
+  },
   "ki": {
     "id": "ki",
     "name": "Ki",
@@ -3807,6 +3881,36 @@ const THEMES = {
       "loop": true
     },
     "module": "gamification"
+  },
+  "null": {
+    "id": "null",
+    "name": "Null",
+    "scheme": "dark",
+    "bg": "#050807",
+    "tokens": {
+      "bg": "#050807",
+      "bg-elev": "#0A0F0C",
+      "bg-elev-2": "#101712",
+      "line": "#1B2A20",
+      "text": "#C8FFD8",
+      "text-dim": "#6FBF8A",
+      "text-faint": "#47795A",
+      "accent": "#3DFF88",
+      "accent-ink": "#04120A",
+      "pos": "#3DFF88",
+      "neg": "#FF5555",
+      "warn": "#FFD866",
+      "shadow": "0 0 0 1px rgba(61,255,136,.10), 0 6px 22px rgba(0,0,0,.7)",
+      "r-lg": "2px",
+      "r-md": "2px",
+      "r-sm": "0px"
+    },
+    "fontFamily": "JetBrains Mono",
+    "fontImports": [
+      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap"
+    ],
+    "music": null,
+    "module": null
   },
   "paper": {
     "id": "paper",
