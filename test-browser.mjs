@@ -366,6 +366,47 @@ const failedRequests = [];
   ok("works offline (SW serves cached shell)", !offline.crash && offline.viewLen > 100, JSON.stringify(offline));
   await page.setOfflineMode(false);
 
+  // ---- URL parameters for iOS Shortcuts (?sms= / ?view=add) ----
+  {
+    const sms = "Salary OMR 644.000 Credited to your Account 26/08/2026.";
+    await page.goto(base + "/index.html?sms=" + encodeURIComponent(sms), { waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 900));
+    const r = await page.evaluate(() => {
+      const rv = document.getElementById("smsReview");
+      return {
+        overlayOpen: !!document.querySelector("#full.open"),
+        reviewText: rv ? rv.textContent.slice(0, 200) : null,
+        rows: document.querySelectorAll("#smsReview .rvrow").length,
+        search: location.search,
+        crash: !!document.getElementById("__crash"),
+      };
+    });
+    ok("?sms= opens the pre-filled review screen", r.overlayOpen && r.rows === 1 && /644/.test(r.reviewText || ""), JSON.stringify(r));
+    ok("?sms= is cleared from the URL (refresh won't re-import)", r.search === "", JSON.stringify(r));
+    ok("?sms= does not crash the app", !r.crash);
+
+    // oversized param is ignored without breaking the app
+    await page.goto(base + "/index.html?sms=" + "x".repeat(6000), { waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 700));
+    const big = await page.evaluate(() => ({
+      overlayOpen: !!document.querySelector("#full.open"),
+      viewLen: document.getElementById("view").innerHTML.length,
+      search: location.search,
+    }));
+    ok("oversized ?sms= is ignored, app still renders", !big.overlayOpen && big.viewLen > 100 && big.search === "", JSON.stringify(big));
+
+    // ?view=add opens the keypad
+    await page.goto(base + "/index.html?view=add", { waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 800));
+    const add = await page.evaluate(() => ({
+      keypadOpen: !!document.querySelector("#sheet.open #keypad"),
+      search: location.search,
+    }));
+    ok("?view=add opens the add-transaction keypad", add.keypadOpen && add.search === "", JSON.stringify(add));
+    await page.goto(base + "/index.html", { waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
   // ---- report collected errors ----
   if (failedRequests.length) console.log("  [network non-200]\n   " + failedRequests.join("\n   "));
   const realFailed = failedRequests.filter((u) => !/favicon/.test(u));

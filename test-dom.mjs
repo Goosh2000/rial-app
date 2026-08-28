@@ -557,7 +557,64 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     const ov = $("#full").textContent;
     ok("allowance overlay shows allowed + spent + remaining", /allowed/i.test(ov) && /spent/i.test(ov) && /(left|remaining)/i.test(ov));
     ok("allowance overlay has a floor input", !!$("#alFloor"));
-    win.eval("closeFull()"); await sleep(150);
+    win.eval("closeFull()"); await sleep(360);
+  }
+
+  // ---- URL parameters for iOS Shortcuts (?sms= / ?view=add) ----
+  {
+    const setQ = (q) => win.history.replaceState(null, "", "/index.html" + (q ? "?" + q : ""));
+    const runParams = async () => { await win.eval("(async () => { await handleUrlParams(); })()"); await sleep(140); };
+    const txCount = () => JSON.parse(win.localStorage.getItem("rial:transactions") || "[]").length;
+
+    // 1. a recognised message -> review screen pre-filled, never auto-saved, param stripped
+    const before = txCount();
+    setQ("sms=" + encodeURIComponent("Salary OMR 644.000 Credited to your Account 26/08/2026."));
+    await runParams();
+    ok("?sms= opens the review overlay", !!$("#full.open") && !!$("#smsReview") && $("#smsReview").textContent.length > 10);
+    ok("?sms= pre-fills the parsed amount", /644/.test($("#smsReview").textContent));
+    ok("?sms= never auto-saves", txCount() === before);
+    ok("?sms= has a manual Save button", !!$("#rvSave"));
+    ok("?sms= is stripped from the URL", !/sms=/.test(win.location.search));
+    win.eval("closeFull()"); await sleep(360);
+
+    // 2. multiple messages in one parameter -> multiple review rows
+    setQ("sms=" + encodeURIComponent(
+      "Salary OMR 644.000 Credited to your Account 26/08/2026.\n\n" +
+      "Dear Customer, You have sent OMR 57.000 to AHMED from your a/c 0303XXXXXXXX0017 on 26/08/2026 19:42:00 using Mobile"));
+    await runParams();
+    eq("?sms= with two messages -> 2 review rows", $$("#smsReview .rvrow").length, 2);
+    win.eval("closeFull()"); await sleep(360);
+
+    // 3. an unrecognised message must land on review as needs-a-type, not fail silently
+    setQ("sms=" + encodeURIComponent("Totally unrecognised bank blurb, no known format here 12.500"));
+    await runParams();
+    ok("unrecognised ?sms= still opens review", !!$("#smsReview") && $("#smsReview").textContent.length > 10);
+    ok("unrecognised ?sms= is flagged Unrecognised", /Unrecognised/i.test($("#smsReview").textContent));
+    ok("unrecognised ?sms= is not saveable yet (Save disabled)", !$("#rvSave") || $("#rvSave").disabled);
+    win.eval("closeFull()"); await sleep(360);
+
+    // 4. oversized parameter -> ignored, app untouched, still stripped
+    setQ("sms=" + "x".repeat(5000));
+    await runParams();
+    ok("oversized ?sms= opens nothing", !$("#full.open"));
+    ok("oversized ?sms= leaves the app usable", $("#view").textContent.length > 20);
+    ok("oversized ?sms= is still stripped", !/sms=/.test(win.location.search));
+
+    // 5. empty / malformed parameter -> no crash
+    setQ("sms=");
+    await runParams();
+    setQ("sms=%E0%A4%A%%");
+    await runParams();
+    ok("empty / malformed ?sms= does not crash the app", errors.length === 0 && $("#view").textContent.length > 20, errors.slice(0, 2).join(" | "));
+
+    // 6. ?view=add -> straight to the add-transaction keypad
+    win.eval("closeFull()"); await sleep(360);
+    setQ("view=add");
+    await runParams();
+    ok("?view=add opens the add-transaction keypad", !!$("#sheet.open #keypad"));
+    ok("?view=add is stripped from the URL", !/view=/.test(win.location.search));
+    win.eval("closeSheet()"); await sleep(200);
+    setQ("");
   }
 
   // Export backup builds valid JSON (stub blob)

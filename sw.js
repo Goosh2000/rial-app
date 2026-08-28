@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "10";  // v10: Monarch theme — theme-declared music + gamification module (quests/XP/QUEST COMPLETE)
+const SW_VERSION = "11";  // v11: ?sms= / ?view=add URL params for iOS Shortcuts (parse to review, never auto-save)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

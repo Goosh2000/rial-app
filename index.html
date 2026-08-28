@@ -4147,6 +4147,65 @@ async function handleThemeLinkFragment(){
   setTimeout(() => openThemeImportPreview(theme), 450);
 }
 
+/* ---- URL parameters for iOS Shortcuts --------------------------------------
+ * ?sms=<one or more bank messages>  — parse and open the REVIEW screen with the
+ *   result pre-filled. Never auto-saves. An unrecognised message still lands on
+ *   review as a needs-a-type entry. Multiple messages (blank-line separated, or
+ *   run together the way real bank SMS are) all parse via SmsParser.parseBatch.
+ * ?view=add  — open straight to the add-transaction keypad.
+ * The params are stripped from the URL first, so a refresh never re-imports.
+ * Oversized or malformed input is ignored without disturbing the app.
+ * ------------------------------------------------------------------------- */
+const URL_SMS_MAX = 4000;       // generous headroom: ~25 average bank SMS at once
+
+function clearQueryParams(keys){
+  try {
+    const sp = new URLSearchParams(location.search || "");
+    let hit = false;
+    for (const k of keys) if (sp.has(k)){ sp.delete(k); hit = true; }
+    if (!hit) return;
+    const qs = sp.toString();
+    const url = location.pathname + (qs ? "?" + qs : "") + (location.hash || "");
+    if (history && history.replaceState) history.replaceState(null, document.title, url);
+    else location.search = qs;
+  } catch(_){}
+}
+
+async function handleUrlParams(){
+  let sms = null, view = null;
+  try {
+    const sp = new URLSearchParams(location.search || "");   // decodes %XX and "+" for us
+    sms = sp.get("sms");
+    view = sp.get("view");
+  } catch(_){}
+  if (sms == null && view == null) return;
+  clearQueryParams(["sms", "view"]);                         // strip first — a refresh must not re-import
+  if (!(await DB.meta("onboarded", false))) return;          // don't stack modals over onboarding
+
+  if (sms != null){
+    if (sms.length > URL_SMS_MAX){
+      setTimeout(() => toast("Import link too long — ignored"), 500);
+    } else {
+      let parsed = [];
+      try { parsed = SmsParser.parseBatch(sms, parserCtx()); } catch(_){}
+      if (!parsed.length && sms.trim()){                     // too short for the batch splitter — still review it
+        try { const one = SmsParser.parseOne(sms.trim(), parserCtx()); if (one) parsed = [one]; } catch(_){}
+      }
+      if (parsed.length){
+        openFull(smsHTML()); wireSMS();
+        openReview(parsed, { anchor: "#smsReview", source: "sms" });
+        setTimeout(() => { const el = FULL.querySelector("#smsReview"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" }); }, 60);
+        return;                                              // an SMS import wins over ?view=add
+      }
+    }
+  }
+
+  if (view === "add"){
+    draft = newDraft();
+    openKeypad();
+  }
+}
+
 function themePreviewMarkup(theme){
   const t = { ...THEMES[THEME_DEFAULT].tokens, ...theme.tokens };
   const vars = THEME_TOKEN_KEYS.map(k => `--${k}:${t[k]}`).join(";");
@@ -4605,6 +4664,7 @@ async function boot(){
   await rollRecurring();
   window.__rialReady = true;
   go("home");
+  handleUrlParams();                      // ?sms= / ?view=add from an iOS Shortcut
 
   if (!(await DB.meta("onboarded", false))) renderOnb();
 
