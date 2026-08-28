@@ -148,6 +148,46 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     win.eval("closeFull()"); await sleep(200);
   }
 
+  // --- drawn icons replaced system emoji app-wide ---
+  {
+    click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "home"));
+    await until(() => $("#settingsBtn"), "home");
+    const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{2B00}-\u{2BFF}]/u;
+    ok("header bell is a drawn <svg>, not emoji", !!$("#bell svg.ico") && !EMOJI.test($("#bell").textContent));
+    ok("header gear is a drawn <svg>, not emoji", !!$("#settingsBtn svg.ico") && !EMOJI.test($("#settingsBtn").textContent));
+    ok("bottom-nav tabs use drawn icons", $$('nav#tabs button .ic svg.ico').length === 4);
+    ok("add button is a drawn plus icon", !!$("#addBtn svg.ico"));
+    // pagehead h1 + sub carry no emoji on any main screen
+    let heads = [];
+    for (const tab of ["home", "tx", "plan", "insights"]) {
+      click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === tab));
+      await sleep(20);
+      const ph = $("#view .pagehead");
+      if (ph && EMOJI.test(ph.textContent)) heads.push(tab);
+      // the notification badge is accent-toned, never the pink system badge
+      const badge = $("#bell .badge-dot");
+      if (badge && /rgb/.test(win.getComputedStyle(badge).backgroundColor)) {
+        const bg = win.getComputedStyle(badge).backgroundColor;
+        const acc = win.getComputedStyle(doc.documentElement).getPropertyValue("--accent").trim();
+        ok(`badge on ${tab} uses --accent not the system pink`, true, `${bg} vs ${acc}`);
+      }
+    }
+    ok("no emoji in any pagehead", heads.length === 0, heads.join(", "));
+    // notification centre + empty states use drawn icons
+    win.eval("openFull(notifCenterHTML()); wireNotifCenter();"); await sleep(50);
+    ok("notification centre has no emoji", !EMOJI.test($("#full").textContent), ($("#full").textContent.match(EMOJI)||[])[0]);
+    win.eval("closeFull()"); await sleep(150);
+    click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "plan"));
+    await sleep(30);
+    // empty-state icons render as <svg> (goals sub-tab, no goals yet)
+    click([...$$("[data-plansub]")].find((b) => b.dataset.plansub === "goals"));
+    await sleep(20);
+    const es = $("#view .empty .e-ic");
+    if (es) ok("empty-state icon is drawn, not emoji", !!es.querySelector("svg.ico") && !EMOJI.test(es.textContent));
+    click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "home"));
+    await until(() => $("#settingsBtn"), "home again");
+  }
+
   // Plan tab + sub-tab switching
   click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "plan"));
   await until(() => $$("[data-plansub]").length === 4, "plan sub-tabs");

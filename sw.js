@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "15";  // v15: iOS-safe music file picker (<label for>, broadened accept, decode-validate, sync tap path)
+const SW_VERSION = "16";  // v16: drawn inline-SVG icon set replaces system emoji app-wide (all themes)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

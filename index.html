@@ -193,7 +193,19 @@ h1,h2,h3,h4,.pagehead h1,.hero .big,.hero .label,.sheet h2{ font-family:var(--fo
 .pagehead h1{ font-size:26px; font-weight:700; letter-spacing:-.02em; }
 .pagehead .sub{ color:var(--text-dim); font-size:13px; }
 .pagehead .hdr{ display:flex; gap:2px; align-self:flex-start; flex:none; }
-.hdr-btn{ position:relative; display:grid; place-items:center; min-width:44px; min-height:44px; padding:8px; font-size:20px; line-height:1; color:var(--text); }
+.hdr-btn{ position:relative; display:grid; place-items:center; min-width:44px; min-height:44px; padding:8px; font-size:20px; line-height:1; color:var(--text-dim); }
+.hdr-btn:active{ color:var(--text); }
+
+/* drawn icons: inherit currentColor, size to their context */
+.ico{ width:1.15em; height:1.15em; display:inline-block; vertical-align:-.18em; flex:none; }
+.hdr-btn .ico{ width:22px; height:22px; }
+.ico.big{ width:38px; height:38px; }
+.tx .ic .ico{ width:20px; height:20px; }
+.btn .ico{ width:16px; height:16px; }
+.btn.bk{ gap:4px; padding-left:12px; }
+.faint > .ico{ width:18px; height:18px; }
+.notif-ic{ display:grid; place-items:center; width:30px; height:30px; flex:none; color:var(--text-dim); }
+.notif-ic .ico{ width:20px; height:20px; }
 
 nav#tabs{
   position:absolute; left:0; right:0; bottom:0;
@@ -210,6 +222,7 @@ nav#tabs button{
   transition: color .15s;
 }
 nav#tabs button .ic{ font-size:20px; line-height:1; }
+nav#tabs button .ic .ico{ width:23px; height:23px; }
 nav#tabs button[aria-current="true"]{ color:var(--accent); }
 nav#tabs .addslot{ position:relative; }
 #addBtn{
@@ -221,6 +234,7 @@ nav#tabs .addslot{ position:relative; }
   transition: transform .2s var(--spring);
 }
 #addBtn:active{ transform:translateX(-50%) scale(.9); }
+#addBtn .ico{ width:26px; height:26px; }
 
 /* ---- [4] COMPONENTS ------------------------------------------------- */
 .card{ background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px; margin-bottom:14px; }
@@ -265,7 +279,7 @@ nav#tabs .addslot{ position:relative; }
 .scroll-x::-webkit-scrollbar{ display:none; }
 .progress{ height:8px; border-radius:999px; background:var(--bg-elev-2); overflow:hidden; }
 .progress > i{ display:block; height:100%; background:var(--accent); border-radius:999px; transform-origin:left; }
-.badge-dot{ position:absolute; top:-2px; right:-2px; min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--neg); color:#fff; font-size:10px; font-weight:700; display:grid; place-items:center; }
+.badge-dot{ position:absolute; top:4px; right:4px; min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--accent); color:var(--accent-ink); font-size:10px; font-weight:700; display:grid; place-items:center; box-shadow:0 0 0 2px var(--bg); }
 
 .sheet-scrim{ position:fixed; inset:0; background:rgba(0,0,0,.5); opacity:0; pointer-events:none; transition:opacity .2s; z-index:40; }
 .sheet-scrim.open{ opacity:1; pointer-events:auto; }
@@ -314,7 +328,8 @@ nav#tabs .addslot{ position:relative; }
 .bars .b.prev .track > i{ background:var(--text-faint); }
 
 .empty{ text-align:center; padding:44px 20px; color:var(--text-faint); }
-.empty .e-ic{ font-size:38px; }
+.empty .e-ic{ font-size:38px; display:grid; place-items:center; }
+.empty .e-ic .ico.big{ width:36px; height:36px; opacity:.7; }
 .empty p{ margin-top:8px; font-size:14px; }
 
 /* ---- [6] KEYPAD ---------------------------------------------------- */
@@ -384,11 +399,11 @@ img{ max-width:100%; }
 <div id="app">
   <main id="view"><!-- screens render here --></main>
   <nav id="tabs">
-    <button data-tab="home"><span class="ic">◎</span>Home</button>
-    <button data-tab="tx"><span class="ic">≡</span>Transactions</button>
-    <span class="addslot"><button id="addBtn" aria-label="Add transaction">+</button></span>
-    <button data-tab="plan"><span class="ic">◇</span>Plan</button>
-    <button data-tab="insights"><span class="ic">▤</span>Insights</button>
+    <button data-tab="home"><span class="ic"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11l8-6.5 8 6.5"/><path d="M6.5 9.8V20h11V9.8"/></svg></span>Home</button>
+    <button data-tab="tx"><span class="ic"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg></span>Transactions</button>
+    <span class="addslot"><button id="addBtn" aria-label="Add transaction"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></span>
+    <button data-tab="plan"><span class="ic"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l8.5 4.5L12 12.5 3.5 8z"/><path d="M4 12l8 4.5L20 12M4 16l8 4.5L20 16"/></svg></span>Plan</button>
+    <button data-tab="insights"><span class="ic"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/></svg></span>Insights</button>
   </nav>
 </div>
 
@@ -1056,7 +1071,7 @@ function txRowHTML(t){
   const c = catFor(t);
   if (t.type === "transfer_internal"){
     return `<div class="tx" data-tx="${t.id}" style="opacity:.6">
-      <div class="ic">↔</div>
+      <div class="ic">${svgIcon("swap")}</div>
       <div class="mid"><div class="t1">Moved ${esc(acctLabel(t.fromAccountId))} → ${esc(acctLabel(t.toAccountId))}</div>
         <div class="t2">internal transfer · not spending</div></div>
       <div class="amt mono faint">${U.fmt(t.amount)}</div>
@@ -1065,7 +1080,7 @@ function txRowHTML(t){
   const isIn = F.isIncome(t);
   const acct = t.accountId ? accountById(t.accountId) : null;
   return `<div class="tx" data-tx="${t.id}">
-    <div class="ic">${t.type==="transfer_out"?"↗":t.type==="transfer_in"?"↙":c.icon}</div>
+    <div class="ic">${t.type==="transfer_out"?svgIcon("arrowUR"):t.type==="transfer_in"?svgIcon("arrowDL"):c.icon}</div>
     <div class="mid"><div class="t1">${esc(t.note || t.counterparty || t.category || "—")}</div>
       <div class="t2">${esc(t.type==="transfer_out"||t.type==="transfer_in"?(t.counterparty?"to/from "+t.counterparty:"person"):t.category||"")}${acct&&S.accounts.length>1?" · "+esc(acct.label):""}${t.source&&t.source!=="manual"?" · "+t.source:""}</div></div>
     <div class="amt mono ${isIn?"pos":""}">${isIn?"+":""}${U.fmt(t.amount)}</div>
@@ -1097,7 +1112,7 @@ SCREENS.tx = () => {
       <div class="dhead"><span>${U.relDay(U.parseYMD(k))}</span><span class="mono">${U.fmt(dayNet,{plus:dayNet>0})}</span></div>
       ${items.map(txRowHTML).join("")}
     </div>`;
-  }).join("") : emptyState("≡","No transactions yet","Tap + to add your first one.")}
+  }).join("") : emptyState("list","No entries logged","Tap + to add your first one.")}
   `;
 };
 
@@ -1123,7 +1138,7 @@ function planEnvelopes(){
   const envs = F.envelopesFor(mk);
   if (!plan || !envs.length){
     return `
-    ${emptyState("✉️","No plan for "+monthName(mk).split(" ")[0]+" yet","Split your salary into savings + spending envelopes.")}
+    ${emptyState("mail","No plan for "+monthName(mk).split(" ")[0]+" yet","Split your salary into savings + spending envelopes.")}
     <button class="btn primary block" data-act="split-salary">Split my salary</button>`;
   }
   const unalloc = F.unallocated(mk);
@@ -1152,7 +1167,7 @@ function planEnvelopes(){
         <span style="color:${p.left<0?'var(--neg)':'var(--text-dim)'}">${U.fmt(p.left)} left of ${U.fmt(e.allocated)}</span>
       </div>
       ${p.state==="empty" ? `<button class="btn sm block danger" data-act="move-env" data-to="${e.id}" style="margin-top:8px">Envelope empty — move money in</button>`
-        : p.state==="amber" ? `<div class="tiny faint" style="margin-top:6px">⚠️ ${U.fmt(Math.round(p.expected))} is the pace budget for today</div>` : ""}
+        : p.state==="amber" ? `<div class="tiny faint" style="margin-top:6px;display:flex;align-items:center;gap:5px">${svgIcon("alert")} ${U.fmt(Math.round(p.expected))} is the pace budget for today</div>` : ""}
     </div>`;
   }).join("")}
   <button class="btn block ghost" data-act="add-env" style="margin-top:4px">+ Add envelope</button>
@@ -1181,7 +1196,7 @@ function planPayments(){
           </div>
           <div class="mono" style="font-weight:700">${r.type==="income"?"+":""}${U.fmt(r.amount)}</div>
         </div>
-      </div>`).join("") : emptyState("🔁","No recurring items","Add rent, phone, gym, subscriptions…")}
+      </div>`).join("") : emptyState("repeat","No recurring items","Add rent, phone, gym, subscriptions…")}
     <button class="btn primary block" data-act="add-recur" style="margin-top:6px">+ Add recurring payment</button>
   ` : `
     <div class="card">
@@ -1231,7 +1246,7 @@ function planWishlist(){
       ${w.bought ? "" : unlocked ? `
         <div class="divider"></div>
         <div class="pill" style="color:${canAfford?'var(--pos)':'var(--warn)'};margin-bottom:8px">
-          ${canAfford?"✓ Unlocked — Safe-to-Spend says you can afford this now":"Unlocked — but it doesn't fit Safe-to-Spend yet"}</div>
+          ${canAfford?"Unlocked — Safe-to-Spend says you can afford this now":"Unlocked — but it doesn't fit Safe-to-Spend yet"}</div>
         <div class="tiny faint">Saving pace: ${weeks===Infinity?"—":`~${weeks} week${weeks>1?"s":""}`} at your current net</div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button class="btn sm primary" data-act="wish-bought" data-id="${w.id}">Mark bought</button>
@@ -1245,7 +1260,7 @@ function planWishlist(){
         </div>
       `}
     </div>`;
-  }).join("") : emptyState("⏳","Wishlist is empty","Add something you want. It locks for 30 days before you can buy guilt-free.")}
+  }).join("") : emptyState("hourglass","Wishlist is empty","Add something you want. It locks for 30 days before you can buy guilt-free.")}
   <button class="btn primary block" data-act="add-wish">+ Add to wishlist</button>
   `;
 }
@@ -1269,11 +1284,11 @@ function planGoals(){
         <span class="mono tiny">${U.fmt(g.saved||0)} / ${U.fmt(g.target)}</span></div>
       <div class="progress" style="margin:10px 0 6px"><i style="width:${pct.toFixed(1)}%;background:${g.color||'var(--accent)'}"></i></div>
       <div class="row between">
-        <span class="tiny faint">${pct>=100?"🎉 reached":`${pct.toFixed(0)}%`}</span>
+        <span class="tiny faint">${pct>=100?`${svgIcon("check")} reached`:`${pct.toFixed(0)}%`}</span>
         <button class="btn sm primary" data-act="move-savings" data-id="${g.id}">Move to savings</button>
       </div>
     </div>`;
-  }).join("") : emptyState("🎯","No savings goals","Camera, emergency fund, trip — name it and track it.")}
+  }).join("") : emptyState("target","No savings goals","Camera, emergency fund, trip — name it and track it.")}
   <button class="btn primary block" data-act="add-goal">+ New goal</button>
   `;
 }
@@ -1287,8 +1302,8 @@ function pendingCardHTML(){
         <div class="ic">${catFor(t).icon}</div>
         <div class="mid"><div class="t1">${esc(t.note||t.category)}</div><div class="t2">due ${U.relDay(t.ts)}</div></div>
         <div class="row" style="gap:6px">
-          <button class="btn sm primary" data-act="confirm-pending" data-id="${t.id}">${U.fmt(t.amount)} ✓</button>
-          <button class="btn sm ghost danger" data-act="skip-pending" data-id="${t.id}">✕</button>
+          <button class="btn sm primary" data-act="confirm-pending" data-id="${t.id}">${U.fmt(t.amount)} ${svgIcon("check")}</button>
+          <button class="btn sm ghost danger" data-act="skip-pending" data-id="${t.id}" aria-label="Skip">${svgIcon("close")}</button>
         </div>
       </div>`).join("")}
   </div>`;
@@ -1349,7 +1364,49 @@ SCREENS.insights = () => {
 };
 
 function monthName(mk){ const [y,m] = mk.split("-").map(Number); return new Date(y,m-1,1).toLocaleDateString("en-GB",{month:"long",year:"numeric"}); }
-function emptyState(ic,t,p){ return `<div class="empty"><div class="e-ic">${ic}</div><h3 style="margin-top:8px">${t}</h3><p>${p}</p></div>`; }
+
+/* ---- drawn icon set — replaces system emoji app-wide -------------------------
+ * 24x24 viewBox, 1.5px stroke, stroke="currentColor", no fills (except dots).
+ * Inherits the theme's text/accent colour, so it works in all five themes.
+ * Original geometry — no third-party artwork. ---------------------------- */
+const ICON = {
+  bell:      '<path d="M6 9.5a6 6 0 0 1 12 0c0 4.5 1.8 5.8 2 6H4c.2-.2 2-1.5 2-6z"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/>',
+  gear:      '<circle cx="12" cy="12" r="3.3"/><circle cx="12" cy="12" r="7.6" stroke-dasharray="2.6 3"/>',
+  music:     '<path d="M9 17V5l10-2v12"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="16.5" cy="15.5" r="2.5"/>',
+  musicPause:'<path d="M8 5h2.5v14H8zM13.5 5H16v14h-2.5z"/>',
+  flame:     '<path d="M12 21c3.3 0 5.5-2.3 5.5-5.5 0-3.7-3.4-5.3-3.4-9.5 0 0-2.8 1.6-3.1 5.4-1.2-.2-1.9-1.4-1.9-2.9-2 1.7-2.6 3.9-2.6 6.5C6 18.4 8.6 21 12 21z"/>',
+  chevron:   '<path d="M9 5l7 7-7 7"/>',
+  back:      '<path d="M15 5l-7 7 7 7"/>',
+  check:     '<path d="M5 13l4 4 10-11"/>',
+  plus:      '<path d="M12 5v14M5 12h14"/>',
+  close:     '<path d="M6 6l12 12M18 6L6 18"/>',
+  diamond:   '<path d="M12 3l9 9-9 9-9-9z"/>',
+  arrowUp:   '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  arrowUR:   '<path d="M7 17 17 7M9 7h8v8"/>',
+  arrowDL:   '<path d="M17 7 7 17M15 17H7V9"/>',
+  swap:      '<path d="M7 8h11l-3-3M17 16H6l3 3"/>',
+  alert:     '<path d="M12 3.5 21.5 20H2.5z"/><path d="M12 10v4.5M12 17.5h.01"/>',
+  calendar:  '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  repeat:    '<path d="M17 3l3.5 3.5L17 10"/><path d="M4 12V10a4 4 0 0 1 4-4h12.5"/><path d="M7 21l-3.5-3.5L7 14"/><path d="M20 12v2a4 4 0 0 1-4 4H3.5"/>',
+  disk:      '<path d="M5 4h11l3.5 3.5V20H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+  sparkle:   '<path d="M12 3.5 13.8 9 19.5 10.5 13.8 12 12 17.5 10.2 12 4.5 10.5 10.2 9z"/>',
+  hourglass: '<path d="M6 3h12M6 21h12M7 3c0 5 5 6 5 9s-5 4-5 9M17 3c0 5-5 6-5 9s5 4 5 9"/>',
+  target:    '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/>',
+  trophy:    '<path d="M8 4h8v4.5a4 4 0 0 1-8 0z"/><path d="M8 5.5H5.2A3 3 0 0 0 8 9M16 5.5h2.8A3 3 0 0 1 16 9"/><path d="M12 12.5V16M9.5 20h5M10 16h4v4h-4z"/>',
+  mail:      '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7l8 5.5L20 7"/>',
+  lock:      '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+  home:      '<path d="M4 11l8-6.5 8 6.5"/><path d="M6.5 9.8V20h11V9.8"/>',
+  list:      '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  layers:    '<path d="M12 3.5l8.5 4.5L12 12.5 3.5 8z"/><path d="M4 12l8 4.5L20 12M4 16l8 4.5L20 16"/>',
+  chart:     '<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
+};
+function svgIcon(name, cls){
+  const body = ICON[name];
+  if (!body) return "";
+  return `<svg class="ico${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+function emptyState(ic,t,p){ return `<div class="empty"><div class="e-ic">${ICON[ic]?svgIcon(ic,"big"):esc(ic)}</div><h3 style="margin-top:8px">${t}</h3><p>${p}</p></div>`; }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtBytes(n){ n = +n || 0; return n < 1024 ? n + " B" : n < 1048576 ? Math.round(n/1024) + " KB" : (n/1048576).toFixed(1) + " MB"; }
 
@@ -1360,9 +1417,9 @@ function pageheadHTML(title, sub){
   return `<div class="pagehead">
     <div><h1>${esc(title)}</h1>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</div>
     <div class="hdr">
-      ${themeMusic.spec() ? `<button id="musicToggle" class="hdr-btn" aria-label="Play theme music">♪</button>` : ""}
-      <button id="bell" class="hdr-btn" aria-label="Notifications">🔔${nc?`<span class="badge-dot">${nc}</span>`:""}</button>
-      <button id="settingsBtn" class="hdr-btn" aria-label="Settings">⚙️</button>
+      ${themeMusic.spec() ? `<button id="musicToggle" class="hdr-btn" aria-label="Play theme music">${svgIcon("music")}</button>` : ""}
+      <button id="bell" class="hdr-btn" aria-label="Notifications">${svgIcon("bell")}${nc?`<span class="badge-dot">${nc}</span>`:""}</button>
+      <button id="settingsBtn" class="hdr-btn" aria-label="Settings">${svgIcon("gear")}</button>
     </div>
   </div>`;
 }
@@ -1643,7 +1700,7 @@ async function checkGoalChimes(){
         await awardXp(100);
         showQuestComplete(g);
       } else {
-        toast("🎉 Goal reached: " + g.name);
+        toast("Goal reached: " + g.name);
       }
     }
     if ((g.saved || 0) < g.target && done.has(g.id)){ done.delete(g.id); changed = true; }
@@ -1889,7 +1946,7 @@ function splitRemaining(){
 function renderSplit(){
   const s = splitState, r = splitRemaining();
   openFull(`
-    <button class="btn ghost" onclick="closeFull()" style="margin-bottom:6px">← Cancel</button>
+    <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:6px">${svgIcon("back")}Cancel</button>
     <div class="pagehead"><h1>Split your salary</h1></div>
     <div class="card">
       <div class="field"><label>Salary this month (OMR)</label><input id="spSalary" inputmode="decimal" value="${s.salary}"/></div>
@@ -1991,32 +2048,32 @@ async function pushNotif(type, text){
 function liveNotifs(){
   const out = [];
   const now = Date.now(), today = U.todayTs();
-  S.pending.forEach(t => out.push({ ic:"🔁", t:`Confirm ${t.note||t.category} — ${U.fmtFull(t.amount)}`, sub:`due ${U.relDay(t.ts)}`, tab:"tx" }));
-  F.upcoming(3).forEach(r => out.push({ ic:"📅", t:`${r.name} due ${U.relDay(r.nextDue)}`, sub:U.fmtFull(r.amount), tab:"plan", sub2:"payments" }));
+  S.pending.forEach(t => out.push({ ic:"repeat", t:`Confirm ${t.note||t.category} — ${U.fmtFull(t.amount)}`, sub:`due ${U.relDay(t.ts)}`, tab:"tx" }));
+  F.upcoming(3).forEach(r => out.push({ ic:"calendar", t:`${r.name} due ${U.relDay(r.nextDue)}`, sub:U.fmtFull(r.amount), tab:"plan", sub2:"payments" }));
   F.envelopesFor().forEach(e => {
     const p = F.envelopePace(e.category, e.allocated);
-    if (p.state === "empty") out.push({ ic:"⚠️", t:`${e.category} envelope is empty`, sub:`${U.fmt(p.left)} left`, tab:"plan" });
-    else if (p.state === "amber" || p.state === "red") out.push({ ic:"🟠", t:`${e.category} envelope near limit`, sub:`${U.fmt(p.left)} of ${U.fmt(e.allocated)} left`, tab:"plan" });
+    if (p.state === "empty") out.push({ ic:"alert", t:`${e.category} envelope is empty`, sub:`${U.fmt(p.left)} left`, tab:"plan" });
+    else if (p.state === "amber" || p.state === "red") out.push({ ic:"alert", t:`${e.category} envelope near limit`, sub:`${U.fmt(p.left)} of ${U.fmt(e.allocated)} left`, tab:"plan" });
   });
   S.wishlist.filter(w => !w.bought && w.unlockTs <= now).forEach(w =>
-    out.push({ ic:"⏳", t:`"${w.name}" is unlocked`, sub:U.fmtFull(w.price), tab:"plan", sub2:"wishlist" }));
-  S.goals.forEach(g => { if ((g.saved||0) >= g.target) out.push({ ic:"🎉", t:`Goal reached: ${g.name}`, sub:U.fmtFull(g.target), tab:"plan" }); });
+    out.push({ ic:"hourglass", t:`"${w.name}" is unlocked`, sub:U.fmtFull(w.price), tab:"plan", sub2:"wishlist" }));
+  S.goals.forEach(g => { if ((g.saved||0) >= g.target) out.push({ ic:"trophy", t:`Goal reached: ${g.name}`, sub:U.fmtFull(g.target), tab:"plan" }); });
   const lb = S.settings.lastBackup ? Date.parse(S.settings.lastBackup) : 0;
-  if (Date.now() - lb > 14*86400000) out.push({ ic:"💾", t:"Backup overdue", sub: lb ? "last "+U.relDay(lb) : "never exported", tab:"settings" });
-  if (icsIsStale()) out.push({ ic:"📆", t:"Calendar export is stale", sub:"recurring items changed since last export", tab:"settings" });
+  if (Date.now() - lb > 14*86400000) out.push({ ic:"disk", t:"Backup overdue", sub: lb ? "last "+U.relDay(lb) : "never exported", tab:"settings" });
+  if (icsIsStale()) out.push({ ic:"calendar", t:"Calendar export is stale", sub:"recurring items changed since last export", tab:"settings" });
   return out;
 }
 function notifCount(){ return liveNotifs().length; }
 function notifCenterHTML(){
   const items = liveNotifs();
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Needs you</h1><span class="sub">${items.length} item${items.length!==1?"s":""}</span></div>
   ${items.length ? items.map(n => `<div class="card tight" data-notif-tab="${n.tab}" data-notif-sub="${n.sub2||""}">
-    <div class="row" style="gap:12px"><span style="font-size:20px">${n.ic}</span>
+    <div class="row" style="gap:12px"><span class="notif-ic">${svgIcon(n.ic)||svgIcon("bell")}</span>
       <div class="mid"><div class="t1" style="font-weight:600">${esc(n.t)}</div><div class="tiny faint">${esc(n.sub)}</div></div>
-      <span class="faint">›</span></div>
-  </div>`).join("") : emptyState("✨","All clear","Nothing needs your attention right now.")}
+      <span class="faint">${svgIcon("chevron")}</span></div>
+  </div>`).join("") : emptyState("sparkle","All clear","Nothing needs your attention right now.")}
   ${S.notifs.length ? `<div class="divider"></div><div class="tiny faint" style="margin:0 2px 8px">Recent activity</div>
     ${S.notifs.slice().sort((a,b)=>b.ts-a.ts).slice(0,8).map(n => `<div class="tx"><div class="mid">
       <div class="t2">${esc(n.text)}</div><div class="tiny faint">${U.relDay(n.ts)}</div></div></div>`).join("")}
@@ -2125,7 +2182,7 @@ function openWrapped(mk){
         <div style="position:absolute;top:calc(var(--sat) + 16px);left:0;right:0;display:flex;gap:6px;padding:0 20px">
           ${cards.map((_,i)=>`<i style="flex:1;height:3px;border-radius:2px;background:${i<=idx?'currentColor':'rgba(128,128,128,.3)'}"></i>`).join("")}
         </div>
-        <button onclick="closeFull()" style="position:absolute;top:calc(var(--sat) + 24px);right:20px;font-size:20px;color:currentColor">✕</button>
+        <button onclick="closeFull()" aria-label="Close" style="position:absolute;top:calc(var(--sat) + 24px);right:20px;color:currentColor">${svgIcon("close")}</button>
         <div class="pop" style="max-width:340px">
           <div class="mono" style="font-size:${c.headline?24:46}px;font-weight:800;letter-spacing:-.02em;line-height:1.15">${c.big}</div>
           ${c.sub?`<div class="mono" style="opacity:.7;margin-top:6px">${c.sub}</div>`:""}
@@ -2175,7 +2232,7 @@ function guessDate(s){
 let csvState = null;
 function csvHTML(){
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Import CSV</h1></div>
   <div class="card">
     <p class="tiny faint" style="margin-bottom:10px">Export your statement as CSV from your bank's website, then load it here. Nothing is uploaded.</p>
@@ -2517,7 +2574,7 @@ const SmsParser = (() => {
 
 const TYPE_LABELS = {
   income: "Income", expense: "Expense", transfer_internal: "Moved (internal)",
-  transfer_out: "Sent to person", transfer_in: "Received from person", review: "⚠ Needs a type",
+  transfer_out: "Sent to person", transfer_in: "Received from person", review: "Needs a type",
 };
 function parserCtx(){
   return {
@@ -2567,7 +2624,7 @@ function markDuplicates(entries){
 }
 function smsHTML(){
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Paste bank SMS</h1></div>
   <div class="card">
     <p class="tiny faint" style="margin-bottom:10px">Paste one or more messages. Formats are editable in
@@ -2598,7 +2655,7 @@ function reviewRowHTML(e, i){
         <div class="tiny faint" style="margin-bottom:5px">${esc((e.raw||"").slice(0,110))}${(e.raw||"").length>110?"…":""}
           ${e.matched && e.matched!=="review"?` · <i>${esc(e.matched)}</i>`:""}${e.dup?` · <b style="color:var(--warn)">duplicate</b>`:""}</div>
         ${e.type==="review"?`<div class="tiny" style="color:var(--warn);margin-bottom:4px">Unrecognised — pick a type and check the details.</div>`:""}
-        ${isMove?`<div class="tiny" style="color:var(--accent);margin-bottom:4px">↔ Between your own accounts — will NOT count as spending.</div>`:""}
+        ${isMove?`<div class="tiny" style="color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:5px">${svgIcon("swap")} Between your own accounts — will NOT count as spending.</div>`:""}
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <input data-rv="${i}" data-f="amountStr" inputmode="decimal" value="${esc(e.amountStr)}" placeholder="OMR" ${inp} style="width:88px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px"/>
           <select data-rv="${i}" data-f="type" ${inp}>
@@ -2712,7 +2769,7 @@ function loadTesseract(){
 }
 function ocrHTML(){
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Scan a screenshot</h1></div>
   <div class="card">
     <p class="tiny faint" style="margin-bottom:10px">Photograph or upload a bank SMS, bank-app screen, or receipt.
@@ -2730,7 +2787,7 @@ function wireOCR(){
     const thumb = await downscaleImage(f, 700);
     prog.textContent = "Loading OCR engine…";
     let T;
-    try { T = await loadTesseract(); } catch (err){ prog.textContent = "⚠️ " + err.message; return; }
+    try { T = await loadTesseract(); } catch (err){ prog.textContent = "Error: " + err.message; return; }
     prog.textContent = "Recognising text… 0%";
     let text = "";
     try {
@@ -2738,7 +2795,7 @@ function wireOCR(){
         if (m.status === "recognizing text") prog.textContent = `Recognising text… ${Math.round(m.progress*100)}%`;
       }});
       text = res.data.text || "";
-    } catch (err){ prog.textContent = "⚠️ OCR failed: " + err.message; return; }
+    } catch (err){ prog.textContent = "OCR failed: " + err.message; return; }
     prog.textContent = "Done. Review below.";
     let parsed = SmsParser.parseBatch(text, parserCtx());
     if (!parsed.length){
@@ -2760,7 +2817,7 @@ function wireOCR(){
 /* ============ [U] CATEGORIES + SMS PATTERN editors ================= */
 function catsHTML(){
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Categories</h1></div>
   ${S.cats.map(c => `<div class="card tight">
     <div class="row between">
@@ -2794,7 +2851,7 @@ function smsPatternsHTML(){
   const pats = S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS;
   const rules = S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES;
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>SMS formats</h1></div>
   <div class="card"><p class="tiny faint">Each format is a case-insensitive regex plus a map of which capture group is which field
     (<b>amount, date, time, merchant, counterparty, fromAcct, toAcct, source</b>). Add a new one to support another bank — no code change.
@@ -2855,7 +2912,7 @@ function openOverlay(name){
 /* ---- accounts editor ---- */
 function accountsHTML(){
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Accounts</h1></div>
   <div class="card"><p class="tiny faint">Register each account with its <b>last 4 digits</b> so pasted SMS can be routed and
     internal transfers detected. Only the last 4 are ever stored — never a full number.</p></div>
@@ -2916,7 +2973,7 @@ function allowanceInfoHTML(){
   const a = F.dailyAllowance();
   const mk = U.monthKey();
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Daily allowance</h1></div>
   <div class="card">
     <div class="row between"><span class="muted">Allowed today</span><b class="mono">${U.fmt(a.today)}</b></div>
@@ -2963,7 +3020,7 @@ function scheduleHTML(){
       ${(sch.windows||[]).map((w,i) => `<div class="sched-win">
         <input type="time" data-win-idx="${i}" data-win-field="start" value="${esc(w.start||"18:00")}"/>
         <input type="time" data-win-idx="${i}" data-win-field="end" value="${esc(w.end||"06:00")}"/>
-        <button class="btn sm ghost danger" data-win-del="${i}" aria-label="Remove window">✕</button>
+        <button class="btn sm ghost danger" data-win-del="${i}" aria-label="Remove window">${svgIcon("close")}</button>
         <select data-win-idx="${i}" data-win-field="theme">${THEME_IDS.map(k=>`<option value="${k}" ${w.theme===k?"selected":""}>${themeName(k)}</option>`).join("")}</select>
       </div>`).join("")}
       <button class="btn sm block ghost" id="schedAddWin" style="margin-top:6px">+ Add window</button>
@@ -2991,7 +3048,7 @@ function scheduleHTML(){
 function settingsHTML(){
   const s = S.settings;
   return `
-  <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Settings</h1></div>
 
   <div class="card">
@@ -3041,7 +3098,7 @@ function settingsHTML(){
     return `
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">${esc(themeName(active))}</h3>
-    ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · 🔥 ${s.streak||0} day${(s.streak||0)===1?"":"s"}</div>` : ""}
+    ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${s.streak||0} day${(s.streak||0)===1?"":"s"}</div>` : ""}
     ${reg.music ? `<div id="monarchMusicRow">
       <div id="monarchMusicPlay"${themeMusic.playable()?"":" hidden"}>
         <div class="row between" style="margin-bottom:8px"><span class="tiny">Theme music</span>
@@ -3101,7 +3158,7 @@ function settingsHTML(){
 
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:6px">Backup</h3>
-    <p class="tiny faint" style="margin-bottom:10px">⚠️ Clearing Safari website data deletes everything in this app. Export a backup regularly — it's the only copy.</p>
+    <p class="tiny faint" style="margin-bottom:10px"><span style="display:inline-flex;vertical-align:-.18em;color:var(--warn)">${svgIcon("alert")}</span> Clearing Safari website data deletes everything in this app. Export a backup regularly — it's the only copy.</p>
     <div class="tiny faint" style="margin-bottom:10px">Last backup: ${s.lastBackup ? new Date(s.lastBackup).toLocaleString("en-GB") : "never"}</div>
     <div class="row" style="gap:10px">
       <button class="btn primary block" id="btnExport">Export JSON</button>
@@ -4151,13 +4208,13 @@ async function showThemeQr(){
   try { qrSvg = QR.toSVG(QR.encode(link.url, QR.ECL.L), { border: 3, dark: "#111", light: "#fff" }); }
   catch(_) { qrSvg = ""; }
   openFull(`
-    <button class="btn ghost" onclick="closeFull()" style="margin-bottom:8px">← Close</button>
+    <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
     <div class="pagehead"><h1>Share theme</h1></div>
     <div class="card" style="text-align:center">
       <div style="font-weight:700;font-size:16px">${esc(themeName(currentThemeId()))}</div>
       <div class="tiny faint" style="margin-bottom:12px">${link.payload.font ? "Font: " + esc(link.payload.font) + " · " : ""}${Object.keys(link.payload.tokens).length} colours</div>
       ${qrSvg
-        ? `<div style="max-width:260px;margin:0 auto;background:#fff;padding:12px;border-radius:12px">${qrSvg}</div>`
+        ? `<div class="qr-holder" style="max-width:260px;margin:0 auto;background:#fff;padding:12px;border-radius:12px">${qrSvg}</div>`
         : `<div class="sched-note">This theme is too large for a QR code — use Copy link.</div>`}
       <p class="tiny faint" style="margin-top:12px">Scan on the other phone, or copy the link. The theme never leaves your device except in this link.</p>
       <div class="row" style="gap:8px;margin-top:10px">
@@ -4287,7 +4344,7 @@ function themePreviewMarkup(theme){
 function openThemeImportPreview(theme){
   const collides = isBuiltInTheme(theme.id);
   openFull(`
-    <button class="btn ghost" id="tiCancel" style="margin-bottom:8px">← Cancel</button>
+    <button class="btn ghost bk" id="tiCancel" style="margin-bottom:8px">${svgIcon("back")}Cancel</button>
     <div class="pagehead"><h1>Import theme</h1></div>
     <div class="card">
       <div style="font-size:20px;font-weight:750">${esc(theme.name)}</div>
@@ -4295,8 +4352,8 @@ function openThemeImportPreview(theme){
     </div>
     <div class="card">${themePreviewMarkup(theme)}</div>
     <div class="card">
-      <div class="tiny faint">🔒 Audio is not included in shared themes.</div>
-      <div class="tiny faint" style="margin-top:4px">🔒 Custom effects (scanlines, System-window borders, animations, extra glows) are not included — a shared theme is the colour palette${theme.font ? " and font name" : ""} only.</div>
+      <div class="tiny faint" style="display:flex;align-items:center;gap:5px">${svgIcon("lock")} Audio is not included in shared themes.</div>
+      <div class="tiny faint" style="margin-top:4px;display:flex;align-items:center;gap:5px">${svgIcon("lock")} Custom effects (scanlines, System-window borders, animations, extra glows) are not included — a shared theme is the colour palette${theme.font ? " and font name" : ""} only.</div>
       ${theme.font ? `<div class="tiny faint" style="margin-top:4px">The font "${esc(theme.font)}" is loaded from Google Fonts by name.</div>` : ""}
       ${collides ? `<div class="tiny" style="margin-top:6px;color:var(--warn)">A built-in theme already uses the id "${esc(theme.id)}" — this will import as "${esc(theme.id)}-shared".</div>` : ""}
     </div>
@@ -4344,7 +4401,7 @@ const ONB = document.getElementById("onb");
 let onbState = { step:0, income:"", salaryDay:"25", savePct:"15", envelopes:["Food","Transport","Boxing/Fitness","Family"],
   accounts:[{ label:"Main", last4:"" }] };
 const ONB_STEPS = [
-  () => `<h2>Welcome to Rial 👋</h2><p class="lead">A private money tracker. Everything stays on this iPhone — no account, no server. Let's set it up in a few quick steps.</p>
+  () => `<h2>Welcome to Rial</h2><p class="lead">A private money tracker. Everything stays on this iPhone — no account, no server. Let's set it up in a few quick steps.</p>
     <div class="pill">Currency: OMR (Omani Rial)</div>`,
   () => `<h2>Your income</h2><p class="lead">Roughly how much do you get each month? Used for "Safe to spend".</p>
     <div class="field"><label>Monthly income (OMR)</label><input id="onbIncome" inputmode="decimal" value="${esc(onbState.income)}" placeholder="e.g. 900" /></div>
@@ -4678,7 +4735,7 @@ const themeMusic = {
     const btn = document.getElementById("musicToggle");
     if (btn){
       btn.hidden = !show;
-      btn.textContent = this.playing() ? "⏸" : "♪";
+      btn.innerHTML = this.playing() ? svgIcon("musicPause") : svgIcon("music");
       btn.setAttribute("aria-label", this.playing() ? "Pause theme music" : "Play theme music");
       btn.classList.toggle("playing", this.playing());
     }
@@ -4725,7 +4782,7 @@ async function awardXp(n){
   g.xp = Math.max(0, Math.floor((g.xp || 0) + n));
   await DB.setMeta("game", g);
   const after = levelFor(g.xp).level;
-  if (after > before) toast("⬆ LEVEL " + after);
+  if (after > before) toast("LEVEL " + after);
 }
 
 const QUEST_POOL = [
@@ -4774,7 +4831,7 @@ async function syncQuests(){
   for (const q of todaysQuests(today)){
     if (g.quests.done.includes(q.id)) continue;
     let ok = false; try { ok = !!q.check(ctx); } catch(_){}
-    if (ok){ g.quests.done.push(q.id); gained += q.xp; toast("✔ QUEST · " + q.label); }
+    if (ok){ g.quests.done.push(q.id); gained += q.xp; toast("QUEST · " + q.label); }
   }
   await DB.setMeta("game", g);
   if (gained){ await awardXp(gained); if (currentTab === "home") render(); }
@@ -4787,7 +4844,7 @@ function gamePanelHTML(){
   const streak = S.settings.streak || 0;
   const quests = todaysQuests().map(q => {
     const d = done.includes(q.id);
-    return `<div class="quest${d ? " done" : ""}"><span class="q-box">${d ? "✔" : "▢"}</span>
+    return `<div class="quest${d ? " done" : ""}"><span class="q-box">${d ? svgIcon("check") : svgIcon("diamond")}</span>
       <span class="q-label">${esc(q.label)}</span><span class="q-xp">+${q.xp}</span></div>`;
   }).join("");
   return `
@@ -4797,7 +4854,7 @@ function gamePanelHTML(){
         <div class="gp-lv mono">LV <span data-count="${lv.level}" data-count-fmt="int">${lv.level}</span></div>
         <div class="tiny faint">Monarch · daily quests</div>
       </div>
-      <div class="gp-streak mono" title="no-overspend streak">🔥 ${streak}<span class="tiny faint"> day${streak===1?"":"s"}</span></div>
+      <div class="gp-streak mono" title="no-overspend streak">${svgIcon("flame")} ${streak}<span class="tiny faint"> day${streak===1?"":"s"}</span></div>
     </div>
     <div class="xpbar"><i style="width:${lv.pct}%"></i></div>
     <div class="tiny faint mono" style="margin-top:4px">

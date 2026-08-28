@@ -457,7 +457,7 @@ const failedRequests = [];
     const link = await buildShareLink("monarch");
     await showThemeQr();
     await new Promise((r) => setTimeout(r, 150));
-    const svg = document.querySelector("#full svg");
+    const svg = document.querySelector("#full .qr-holder svg");
     if (!svg) return { rendered: false, link: link.url };
     // rasterise the SVG to a canvas and scan it
     const xml = new XMLSerializer().serializeToString(svg);
