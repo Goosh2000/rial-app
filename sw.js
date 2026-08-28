@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "22";  // v22: music works on any theme (shared file + per-theme overrides; precedence documented)
+const SW_VERSION = "23";  // v23: Settings rebuilt into Money/Appearance/Data/System sections + a System Manual
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

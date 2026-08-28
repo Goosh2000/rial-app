@@ -508,6 +508,45 @@ img{ max-width:100%; }
 .sched-win input[type="time"], .sched-win select{ min-height:38px; padding:6px 8px; background:var(--bg-elev-2); border:1px solid var(--line); border-radius:8px; width:100%; }
 .sched-win button{ min-height:38px; }
 .sched-note{ display:flex; gap:8px; align-items:center; background:var(--bg-elev-2); border:1px solid var(--warn); border-radius:var(--r-md); padding:10px 12px; margin-top:10px; font-size:13px; }
+
+/* ---- Settings: structured sections ---- */
+.set-sec .sec-head{ display:flex; gap:10px; align-items:flex-start; margin-bottom:6px; }
+.set-sec .sec-head .ico{ width:20px; height:20px; color:var(--accent); flex:none; margin-top:1px; }
+.set-sec .sec-head h3{ font-size:15px; font-weight:700; }
+.set-sec .sec-head p{ font-size:12px; color:var(--text-faint); margin-top:2px; line-height:1.4; }
+.set-sec .sub-label{ font-size:11px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--text-faint); margin:16px 0 6px; }
+.set-row{ display:flex; justify-content:space-between; align-items:center; gap:14px; padding:11px 0; border-top:1px solid var(--line); }
+.set-row.top{ border-top:0; }
+.set-row .lab{ min-width:0; flex:1; }
+.set-row .lab .t{ font-size:14px; }
+.set-row .lab .h{ font-size:12px; color:var(--text-faint); margin-top:2px; line-height:1.35; }
+.set-row .ctl{ flex:none; display:flex; gap:6px; align-items:center; }
+.set-row .ctl input[type="text"], .set-row .ctl input:not([type]){ width:96px; text-align:right; padding:9px 10px; min-height:40px;
+  background:var(--bg-elev-2); border:1px solid var(--line); border-radius:var(--r-sm); }
+.danger-sec{ border-color:color-mix(in srgb, var(--neg) 45%, var(--line)); }
+.danger-sec .sec-head .ico{ color:var(--neg); }
+.btn.confirm-armed{ background:var(--neg); color:#fff; border-color:transparent; }
+
+/* theme gallery */
+.theme-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(94px,1fr)); gap:10px; margin-top:4px; }
+.theme-sw{ border:1px solid var(--line); border-radius:var(--r-md); overflow:hidden; text-align:left; padding:0; background:transparent; }
+.theme-sw .pv{ height:50px; display:flex; align-items:flex-end; padding:7px; position:relative; }
+.theme-sw .pv .a{ width:16px; height:16px; border-radius:50%; box-shadow:0 0 0 2px rgba(0,0,0,.25); }
+.theme-sw .pv .t{ position:absolute; top:6px; left:8px; font-size:11px; font-weight:700; }
+.theme-sw .nm{ padding:6px 8px; font-size:12px; font-weight:600; display:flex; align-items:center; gap:4px; }
+.theme-sw[aria-pressed="true"]{ border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
+.theme-sw[aria-pressed="true"] .nm .ico{ width:13px; height:13px; color:var(--accent); }
+
+/* System Manual */
+.manual h2{ font-size:16px; font-weight:700; margin:22px 0 4px; letter-spacing:.01em; }
+.manual > h2:first-child{ margin-top:4px; }
+.manual p{ font-size:15px; line-height:1.5; color:var(--text-dim); margin:6px 0; }
+.manual b{ color:var(--text); }
+.manual .formula{ font-family:var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size:12.5px;
+  background:var(--bg-elev-2); border-left:2px solid var(--accent); padding:8px 10px; border-radius:var(--r-sm); margin:8px 0; color:var(--text); white-space:pre-wrap; }
+.manual .need{ font-size:13px; color:var(--text-faint); margin:4px 0 2px; }
+.manual .divider{ margin:18px 0; }
+@media (prefers-reduced-motion:reduce){ .theme-sw, .set-row{ transition:none; } }
 </style>
 </head>
 <body>
@@ -1547,6 +1586,9 @@ const ICON = {
   list:      '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
   layers:    '<path d="M12 3.5l8.5 4.5L12 12.5 3.5 8z"/><path d="M4 12l8 4.5L20 12M4 16l8 4.5L20 16"/>',
   chart:     '<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
+  coins:     '<ellipse cx="9" cy="7" rx="6" ry="3"/><path d="M3 7v5c0 1.7 2.7 3 6 3s6-1.3 6-3V7"/><path d="M9 15v3c0 1.7 2.7 3 6 3s6-1.3 6-3v-5c0-1.4-1.9-2.6-4.5-2.9"/>',
+  book:      '<path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 19.5A2.5 2.5 0 0 1 7.5 17H20"/>',
+  palette:   '<path d="M12 3a9 9 0 1 0 0 18c1.7 0 2.5-1.3 2.5-2.5 0-1.4-1-2-1-3 0-.8.7-1.5 1.5-1.5H18a3 3 0 0 0 3-3c0-4.4-4-8-9-8z"/><circle cx="7.5" cy="10.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="16.5" cy="10.5" r="1.2" fill="currentColor" stroke="none"/>',
 };
 function svgIcon(name, cls){
   const body = ICON[name];
@@ -1642,6 +1684,7 @@ function handleAct(act, d){
     "ocr": () => openOverlay("ocr"),
     "export-ics": exportICS,
     "open-wrapped": () => openWrapped(prevMonthKey()),
+    "open-manual": () => openOverlay("manual"),
     "edit-cats": () => openOverlay("cats"),
     "edit-sms": () => openOverlay("smsPatterns"),
     "edit-accounts": () => openOverlay("accounts"),
@@ -3068,6 +3111,7 @@ function openOverlay(name){
     smsPatterns: [smsPatternsHTML, wireSMSPatterns],
     accounts: [accountsHTML, wireAccounts],
     allowanceInfo: [allowanceInfoHTML, wireAllowanceInfo],
+    manual:   [manualHTML, null],
   };
   const [html, wire] = R[name] || R.settings;
   openFull(html());
@@ -3220,108 +3264,84 @@ function scheduleHTML(){
     ${body}
     ${note}`;
 }
+function setRow(labelHTML, helperHTML, controlHTML, top){
+  return `<div class="set-row${top ? " top" : ""}">
+    <div class="lab"><div class="t">${labelHTML}</div>${helperHTML ? `<div class="h">${helperHTML}</div>` : ""}</div>
+    <div class="ctl">${controlHTML}</div>
+  </div>`;
+}
+function secHead(icon, title, desc){
+  return `<div class="sec-head">${svgIcon(icon)}<div><h3>${title}</h3><p>${desc}</p></div></div>`;
+}
+function themeGalleryHTML(){
+  const cur = currentThemeId();
+  return `<div class="theme-grid">${THEME_IDS.map(k => {
+    const r = THEME_REG[k] || {}; const t = r.tokens || {};
+    const bg = t.bg || r.bg || "#0b0d10", ac = t.accent || "#4f8cff", tx = t.text || "#f4f6f8", be = t["bg-elev"] || bg;
+    return `<button class="theme-sw" data-theme-set="${esc(k)}" aria-pressed="${cur === k}" aria-label="${esc(themeName(k))} theme">
+      <span class="pv" style="background:${esc(bg)}"><span class="t" style="color:${esc(tx)}">Aa</span><span class="a" style="background:${esc(ac)}"></span></span>
+      <span class="nm" style="background:${esc(be)};color:${esc(tx)}">${esc(themeName(k))}${cur === k ? svgIcon("check") : ""}</span>
+    </button>`;
+  }).join("")}</div>`;
+}
 function settingsHTML(){
   const s = S.settings;
+  const armed = s._armErase ? " confirm-armed" : "";
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Settings</h1></div>
 
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">Theme</h3>
-    <div class="scroll-x">
-      ${THEME_IDS.map(k => `<button class="chip" data-theme-set="${k}" aria-pressed="${s.theme===k}">${themeName(k)}${(THEME_REG[k]||{}).custom?" ·":""}</button>`).join("")}
-    </div>
-    ${(s.userThemes||[]).length ? `<div style="margin-top:10px">
-      <div class="tiny faint" style="margin-bottom:6px">Imported themes</div>
+  <div class="card set-sec">
+    ${secHead("coins", "Money", "Your income and the buffers behind Safe to Spend and the daily allowance.")}
+    ${setRow("Monthly income (OMR)", "Used for Safe to Spend, envelopes and the allowance.", `<input id="setIncome" inputmode="decimal" value="${s.monthlyIncome?(s.monthlyIncome/1000):""}" placeholder="900"/>`, true)}
+    ${setRow("Salary day of month", "When your month resets for planning.", `<input id="setSalaryDay" inputmode="numeric" value="${s.salaryDay}"/>`)}
+    ${setRow("Savings target %", "Held back from Safe to Spend before anything else.", `<input id="setSavePct" inputmode="numeric" value="${s.savingsTargetPct}"/>`)}
+    ${setRow("Minimum daily allowance (OMR)", "The allowance is never advised below this, even after overspending.", `<input id="setFloor" inputmode="decimal" value="${s.allowanceFloor?(s.allowanceFloor/1000):""}" placeholder="0"/>`)}
+    ${setRow("Your time value (OMR / hour)", "Optional — shows prices as work hours.", `<input id="setHourly" inputmode="decimal" value="${s.hourlyValue?(s.hourlyValue/1000):""}" placeholder="optional"/>`)}
+    <button class="btn primary block" id="setSaveMoney" style="margin-top:12px">Save money settings</button>
+    <div class="sub-label">Accounts</div>
+    ${S.accounts.map(a => `<div class="row between tiny" style="padding:3px 0"><span>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:" · no last4"}${a.isPrimary?" · primary":""}</span><span class="mono">${U.fmt(F.accountBalance(a.id))}</span></div>`).join("")}
+    <button class="btn sm block ghost" data-act="edit-accounts" style="margin-top:8px">Manage accounts</button>
+  </div>
+
+  <div class="card set-sec">
+    ${secHead("palette", "Appearance", "Theme, the auto-schedule, sharing themes as links, and music.")}
+    <div class="sub-label">Theme</div>
+    ${themeGalleryHTML()}
+    ${(s.userThemes||[]).length ? `<div class="sub-label">Imported themes</div>
       ${(s.userThemes||[]).map(ut => `<div class="row between" style="padding:4px 0">
-        <span class="tiny">${themeName(ut.id)}${ut.author?` · ${esc(ut.author)}`:""}</span>
-        <button class="btn sm ghost danger" data-act="del-user-theme" data-id="${esc(ut.id)}">Delete</button>
-      </div>`).join("")}
-    </div>` : ""}
-    <div class="row" style="gap:8px;margin-top:12px">
+        <span class="tiny">${esc(themeName(ut.id))}${ut.author?` · ${esc(ut.author)}`:""}</span>
+        <button class="btn sm ghost danger" data-act="del-user-theme" data-id="${esc(ut.id)}">Delete</button></div>`).join("")}` : ""}
+    <div class="row" style="gap:8px;margin-top:10px">
       <button class="btn sm" data-act="share-theme-link">Copy share link</button>
       <button class="btn sm" data-act="share-theme-qr">Show QR</button>
     </div>
+    <div class="sub-label">Auto-schedule</div>
+    <p class="tiny faint" style="margin:-2px 0 4px">Switch theme automatically by time of day, or follow the system light/dark setting.</p>
     ${scheduleHTML()}
+    ${DB.fallback ? "" : `<div class="sub-label">Music</div>
+      ${setRow("Soundtrack", "Now: " + musicSourceLine() + ". Tap the floating orb to play; long-press for volume and files. One shared track + an optional per-theme track, stored on this device only.",
+        `<button class="btn sm" id="btnMusicOptions">Options</button>`, true)}`}
+    ${(() => {
+      const reg = THEME_REG[currentThemeId()] || {};
+      if (reg.module !== "gamification") return "";
+      const lv = levelFor((s.game||{}).xp);
+      return `<div class="sub-label">${esc(themeName(currentThemeId()))} gamification</div>
+        <div class="tiny faint mono" style="display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${streakDisplay().tracked ? streakDisplay().text + " day" + (streakDisplay().text==="1"?"":"s") : "streak not tracked yet"}</div>`;
+    })()}
   </div>
 
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">Money</h3>
-    <div class="field"><label>Monthly income (OMR)</label><input id="setIncome" inputmode="decimal" value="${s.monthlyIncome? (s.monthlyIncome/1000):""}" placeholder="e.g. 900"/></div>
-    <div class="field"><label>Salary day of month</label><input id="setSalaryDay" inputmode="numeric" value="${s.salaryDay}" /></div>
-    <div class="field"><label>Savings target %</label><input id="setSavePct" inputmode="numeric" value="${s.savingsTargetPct}" /></div>
-    <div class="field"><label>Your time value (OMR per hour) — for "price in work hours"</label><input id="setHourly" inputmode="decimal" value="${s.hourlyValue?(s.hourlyValue/1000):""}" placeholder="optional"/></div>
-    <button class="btn primary block" id="setSaveMoney">Save</button>
-  </div>
-
-  <div class="card">
-    <div class="row between" style="margin-bottom:8px"><h3 style="font-size:15px">Accounts</h3>
-      <button class="btn sm" data-act="edit-accounts">Manage</button></div>
-    ${S.accounts.map(a => `<div class="row between tiny"><span>${esc(a.label)}${a.last4?` ····${esc(a.last4)}`:" · no last4"}${a.isPrimary?" · primary":""}</span><span class="mono">${U.fmt(F.accountBalance(a.id))}</span></div>`).join("")}
-  </div>
-
-  <div class="card">
-    <div class="row between"><h3 style="font-size:15px">Tick sound on save / goal chime</h3>
-      <button class="btn sm" id="setSound">${s.soundOn?"On":"Off"}</button></div>
-  </div>
-
-  ${(() => {
-    const active = currentThemeId();
-    const reg = THEME_REG[active] || {};
-    const lv = levelFor((s.game||{}).xp);
-    const gamiRow = reg.module === "gamification"
-      ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${streakDisplay().tracked ? streakDisplay().text + " day" + (streakDisplay().text==="1"?"":"s") : "streak not tracked yet"}</div>`
-      : "";
-    if (!gamiRow) return "";                              // the music card lives under Appearance now
-    return `
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">${esc(themeName(active))}</h3>
-    ${gamiRow}
-  </div>`;
-  })()}
-
-  ${DB.fallback ? "" : `
-  <div class="card">
-    <div class="row between" style="margin-bottom:6px"><h3 style="font-size:15px">Music</h3>
-      <button class="btn sm" id="btnMusicPanel">${themeMusic.playing() ? "Pause" : (themeMusic.playable() ? "Play" : "Set up")}</button></div>
-    <div class="tiny faint">Now: ${musicSourceLine()}. Tap the floating orb on any screen to play; long-press it for these options. One shared track, plus an optional per-theme track. Files stay on this device only.</div>
-    <button class="btn sm block ghost" id="btnMusicOptions" style="margin-top:10px">Music options</button>
-  </div>`}
-
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">Add transactions</h3>
-    <div class="row" style="gap:8px;flex-wrap:wrap">
-      <button class="btn sm" data-act="csv-import">Import CSV</button>
-      <button class="btn sm" data-act="sms-paste">Paste SMS</button>
-      <button class="btn sm" data-act="ocr">Scan screenshot</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">Reminders</h3>
-    <p class="tiny faint" style="margin-bottom:10px">Export a calendar of payment due dates, wishlist unlocks and salary day.
-      Open the file on your iPhone → Add All → native notifications, no server.</p>
-    <div class="tiny faint" style="margin-bottom:10px">
-      ${s.icsExportedAt ? `Last exported ${new Date(s.icsExportedAt).toLocaleDateString("en-GB")}` : "Never exported"}
-      ${icsIsStale() ? ` · <span style="color:var(--warn)">stale — re-export</span>` : ""}
-    </div>
-    <button class="btn primary block" data-act="export-ics">Export calendar (.ics)</button>
-  </div>
-
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:10px">Customise</h3>
-    <div class="row" style="gap:8px;flex-wrap:wrap">
-      <button class="btn sm" data-act="edit-cats">Categories</button>
-      <button class="btn sm" data-act="edit-sms">SMS formats</button>
-      <button class="btn sm" data-act="edit-accounts">Accounts</button>
-      <button class="btn sm" data-act="open-wrapped">Last month's Wrapped</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:6px">Backup</h3>
-    <p class="tiny faint" style="margin-bottom:10px"><span style="display:inline-flex;vertical-align:-.18em;color:var(--warn)">${svgIcon("alert")}</span> Clearing Safari website data deletes everything in this app. Export a backup regularly — it's the only copy.</p>
-    <div class="tiny faint" style="margin-bottom:10px">Last backup: ${s.lastBackup ? new Date(s.lastBackup).toLocaleString("en-GB") : "never"}</div>
+  <div class="card set-sec">
+    ${secHead("disk", "Data", "Bring transactions in, tune the parsers, and export a calendar of due dates.")}
+    ${setRow("Add transactions", "Import a bank CSV, paste an SMS, or scan a screenshot — every entry goes to a review first.",
+      `<button class="btn sm" data-act="csv-import">CSV</button><button class="btn sm" data-act="sms-paste">SMS</button><button class="btn sm" data-act="ocr">Scan</button>`, true)}
+    ${setRow("Categories", "Rename, reorder, recolour, and delete spending categories.", `<button class="btn sm" data-act="edit-cats">Edit</button>`)}
+    ${setRow("SMS formats & rules", "The patterns that read bank messages, and merchant → category rules.", `<button class="btn sm" data-act="edit-sms">Edit</button>`)}
+    ${setRow("Calendar export (.ics)", (s.icsExportedAt ? `Last exported ${new Date(s.icsExportedAt).toLocaleDateString("en-GB")}` : "Never exported") + (icsIsStale() ? ` · <span style="color:var(--warn)">stale</span>` : "") + " — payment due dates, wishlist unlocks and salary day.", `<button class="btn sm" data-act="export-ics">Export</button>`)}
+    ${setRow("Last month's Wrapped", "The monthly summary story for the previous month.", `<button class="btn sm" data-act="open-wrapped">Open</button>`)}
+    <div class="sub-label">Backup</div>
+    <p class="tiny faint" style="margin:-2px 0 8px"><span style="display:inline-flex;vertical-align:-.18em;color:var(--warn)">${svgIcon("alert")}</span> A backup file is the <b>only</b> copy of your data. Clearing Safari website data erases everything here.</p>
+    <div class="tiny faint" style="margin-bottom:8px">Last backup: ${s.lastBackup ? new Date(s.lastBackup).toLocaleString("en-GB") : "never"}</div>
     <div class="row" style="gap:10px">
       <button class="btn primary block" id="btnExport">Export JSON</button>
       <button class="btn block" id="btnImport">Import JSON</button>
@@ -3329,18 +3349,109 @@ function settingsHTML(){
     <input type="file" id="fileImport" accept="application/json" hidden />
   </div>
 
-  <div class="card">
-    <h3 style="font-size:15px;margin-bottom:6px">Troubleshooting</h3>
-    <p class="tiny faint" style="margin-bottom:10px">If the app ever loads blank or looks stuck on an old version: this clears the
-      offline cache + service worker and reloads. Your data (transactions, goals, settings) is <b>not</b> touched.</p>
-    <button class="btn block" id="btnReset">Clear cache &amp; reload</button>
-    ${(THEME_REG[currentThemeId()]||{}).music ? `<div class="tiny faint mono" style="margin-top:10px">${musicDiag()}</div>` : ""}
+  <div class="card set-sec">
+    ${secHead("gear", "System", "Sounds, the manual, and diagnostics. Nothing here leaves your device.")}
+    ${setRow("Synth sounds", "A short tick on save and a chime when a goal is reached (Web Audio, no files).", `<button class="btn sm" id="setSound">${s.soundOn?"On":"Off"}</button>`, true)}
+    ${setRow("System Manual", "How every number is calculated and what to set up for it to work.", `<button class="btn sm" data-act="open-manual">Open</button>`)}
+    ${setRow("If the app looks stuck", "Clears the offline cache + service worker and reloads. Your data is <b>not</b> touched.", `<button class="btn sm" id="btnReset">Clear cache</button>`)}
+    <div class="tiny faint" style="margin-top:12px;line-height:1.55">
+      ${s.firstUseDate ? `Tracking since <b>${new Date(U.parseYMD(s.firstUseDate)).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})}</b> — streaks and history are measured from this date.<br>` : ""}
+      Storage: ${DB.fallback ? "localStorage (fallback)" : "IndexedDB"} · Rial v1 · offline-first · no server · SW ${swState()}
+      ${!DB.fallback ? `<br><span class="mono">${musicDiag()}</span>` : ""}
+    </div>
   </div>
 
-  <div class="card">
-    ${s.firstUseDate ? `<div class="tiny faint">Tracking since ${new Date(U.parseYMD(s.firstUseDate)).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})} — streaks and history are measured from this date.</div>` : ""}
-    <div class="tiny faint">Storage engine: ${DB.fallback ? "localStorage (fallback)" : "IndexedDB"}</div>
-    <div class="tiny faint">Rial v1 · offline-first · no server · SW ${swState()}</div>
+  <div class="card set-sec danger-sec">
+    ${secHead("alert", "Erase everything", "Deletes every transaction, goal, plan, setting and stored file on this device. There is no undo and no server copy.")}
+    <button class="btn block${armed}" id="btnErase">${s._armErase ? "Tap again to erase everything" : "Erase all app data"}</button>
+    ${s._armErase ? `<button class="btn sm block ghost" id="btnEraseCancel" style="margin-top:8px">Cancel</button>` : ""}
+  </div>
+  `;
+}
+function manualHTML(){
+  const div = `<div class="divider"></div>`;
+  return `
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
+  <div class="pagehead"><h1>System Manual</h1></div>
+  <div class="card manual">
+    <p class="tiny faint">In-app documentation. Every figure below is computed on your device from the data you enter — nothing is fetched or uploaded.</p>
+
+    <h2>Safe to Spend</h2>
+    <p>The big number on Home: what you can spend today without breaking this month's budget.</p>
+    <div class="formula">without a Plan:
+  (monthly income − recurring commitments − savings target − spent so far) ÷ days left in month
+
+with a Plan:
+  (unallocated money + money still left in flexible envelopes) ÷ days left in month</div>
+    <p class="need">Needs: a monthly income (Settings → Money), or a Plan for the month.</p>
+    ${div}
+
+    <h2>Daily allowance</h2>
+    <p>A steadier day-to-day target than Safe to Spend. It's a flat share of the month that self-corrects for over/underspending over a rolling 7 days.</p>
+    <div class="formula">pool  = income − commitments − planned goal funding − unspent envelope money
+base  = pool ÷ days in month
+carryover  = (what you spent on days 1..yesterday) − (base × that many days)
+today = base − (carryover ÷ min(7, days left)),  never below the floor</div>
+    <p class="need">Needs: a monthly income or Plan. With neither, it shows "not set" and doesn't count toward streaks.</p>
+    ${div}
+
+    <h2>Envelopes (the Plan)</h2>
+    <p>Split your salary into named buckets for the month. Spending in a category draws down its envelope; "pace" flags whether you're ahead of or behind a straight-line burn.</p>
+    <div class="formula">expected by today = allocated × (day of month ÷ days in month)
+state: green if spent ≤ expected · amber/red as you pass it · empty at 0 left</div>
+    <p class="need">Needs: tap "Split my salary" on the Plan screen once a month.</p>
+    ${div}
+
+    <h2>Recurring items & confirmation</h2>
+    <p>Rent, subscriptions, bills. On its due date each recurring item auto-creates a <b>pending</b> transaction. Pending items don't affect any total until you confirm them (one tap) or skip them, from the bell or the Transactions screen.</p>
+    <p class="need">Needs: add items on Plan → Payments with an amount, category and cadence (monthly / weekly / yearly / custom days).</p>
+    ${div}
+
+    <h2>Wishlist cooling timer</h2>
+    <p>Add something you want; it locks for 30 days. When the timer expires the app tells you whether Safe to Spend can currently absorb it — a deliberate pause before an impulse buy.</p>
+    <div class="formula">unlocks at: added date + 30 days
+"you can afford it" = price ≤ current Safe to Spend for the month</div>
+    ${div}
+
+    <h2>Savings goals</h2>
+    <p>A target amount with an optional date. "Move to savings" records an internal transfer that counts as spending (so Safe to Spend stays honest) and raises the goal's saved amount. Reaching the target fires a one-off celebration.</p>
+    <div class="formula">progress % = saved ÷ target
+on track = saved ≥ target × (days elapsed ÷ total days)   (when a date is set)</div>
+    ${div}
+
+    <h2>Streaks & XP</h2>
+    <p>The streak counts <b>real consecutive calendar days</b> that stayed within that day's allowance, evaluated from your transaction history — a gap of missed days is scored, not skipped. A day with no monthly plan is neutral: it neither adds nor breaks.</p>
+    <div class="formula">each day since last check:
+  spent that day ≤ that day's allowance + tolerance  → streak + 1
+  spent more                                          → streak resets to 0
+  no plan that day                                    → unchanged
+XP: +2 per new transaction · +15 per daily quest · +100 when a goal is funded
+rank/level is derived from cumulative XP</div>
+    <p class="need">Needs: a monthly income or Plan. Until then the tile reads "not tracked yet". Tracking starts the day you first open the app.</p>
+    ${div}
+
+    <h2>SMS import</h2>
+    <p>Paste one or more bank messages (Settings → Data, or an iOS Shortcut to <span class="mono">?sms=</span>). Regex patterns extract amount, date, direction and the last 4 digits of the account; unrecognised messages still arrive on the review screen for you to classify. Nothing is saved until you confirm the review.</p>
+    <p class="need">Needs: your accounts registered with their last 4 digits so messages route correctly.</p>
+    ${div}
+
+    <h2>Screenshot import</h2>
+    <p>Runs on-device OCR (Tesseract, downloaded once and then cached offline) over a receipt or banking-app screenshot, then feeds the recognised text through the same SMS parser and review flow. The image never leaves the device.</p>
+    ${div}
+
+    <h2>Themes & music</h2>
+    <p>Themes are data files: a 16-colour palette, a font, and scoped decorative CSS. They pass a WCAG contrast check at build time. A theme can be shared as a link/QR — only the palette and font name travel, never CSS or audio.</p>
+    <p>Music is a file <b>you</b> choose, stored in this browser only. Precedence for the active theme: a track you assigned to that theme → the theme's own declared track → the shared track → nothing (the orb hides).</p>
+    ${div}
+
+    <h2>Backups</h2>
+    <p>Export JSON writes a single file with every transaction, goal, plan, envelope, account and setting (not the audio blobs). Import JSON replaces everything with a backup's contents. Keep a recent export somewhere safe — it is the only copy.</p>
+    ${div}
+
+    <h2>Where does my data live?</h2>
+    <p><b>Only on this device.</b> Everything is stored in this browser's IndexedDB (or localStorage as a fallback). There is no account and no server — nothing is ever uploaded.</p>
+    <p>Backups are files you control and store wherever you choose. The music file you pick never leaves the device and is not included in a backup.</p>
+    <p>Clearing this site's data in Safari (Settings → Safari → Advanced → Website Data), or deleting the installed app, <b>erases everything</b> with no way to recover it unless you have a backup file.</p>
   </div>
   `;
 }
@@ -3358,6 +3469,20 @@ async function resetApp(){
     if (window.caches){ const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
   } catch(e){ console.warn("reset", e); }
   location.reload();
+}
+async function eraseEverything(){
+  toast("Erasing all data…");
+  try {
+    for (const st of DB.STORES) { try { await DB.clear(st); } catch(_){} }
+    try { if (window.indexedDB) indexedDB.deleteDatabase("rial"); } catch(_){}
+    try { for (const k of Object.keys(localStorage)) if (/^rial[:.]/.test(k)) localStorage.removeItem(k); } catch(_){}
+    if ("serviceWorker" in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs){ try { r.active && r.active.postMessage({ type:"CLEAR_CACHES" }); } catch(_){} await r.unregister(); }
+    }
+    if (window.caches){ const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+  } catch(e){ console.warn("erase", e); }
+  setTimeout(() => location.reload(), 300);
 }
 FULL.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-theme-set]");
@@ -3383,13 +3508,21 @@ FULL.addEventListener("click", async (e) => {
     await DB.setMeta("salaryDay", U.clamp(parseInt(val("setSalaryDay"))||25,1,28));
     await DB.setMeta("savingsTargetPct", U.clamp(parseInt(val("setSavePct"))||0,0,80));
     await DB.setMeta("hourlyValue", U.toBaisa(val("setHourly")));
+    await DB.setMeta("allowanceFloor", U.toBaisa(val("setFloor")));
     await refresh(); toast("Saved"); openFull(settingsHTML());
   }
   if (e.target.id === "setSound"){ await DB.setMeta("soundOn", !S.settings.soundOn); await refresh(); openFull(settingsHTML()); }
-  if (e.target.id === "btnMusicPanel" || e.target.id === "btnMusicOptions"){ openMusicPanel(); return; }
+  if (e.target.id === "btnMusicOptions"){ openMusicPanel(); return; }
   if (e.target.id === "btnExport"){ await doExport(); openFull(settingsHTML()); }
   if (e.target.id === "btnImport"){ document.getElementById("fileImport").click(); }
-  if (e.target.id === "btnReset"){ await resetApp(); }
+  if (e.target.id === "btnReset"){ await resetApp(); return; }
+  if (e.target.id === "btnEraseCancel"){ S.settings._armErase = false; openFull(settingsHTML()); return; }
+  if (e.target.id === "btnErase"){
+    if (!S.settings._armErase){ S.settings._armErase = true; openFull(settingsHTML()); return; }
+    S.settings._armErase = false;
+    await eraseEverything();
+    return;
+  }
 });
 FULL.addEventListener("input", (e) => {
   if (e.target.id === "setMusicVol") themeMusic.setVolume(e.target.value);

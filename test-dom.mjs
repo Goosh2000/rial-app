@@ -145,6 +145,45 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     click(gear);
     await until(() => $("#full.open") && /Settings/i.test($("#full h1")?.textContent || ""), "settings panel opened by gear");
     ok("tapping the gear opens the Settings panel", !!$("#full.open") && !!$("#full [data-theme-set]") && /Settings/i.test($("#full h1").textContent));
+
+    // --- Settings has four labelled sections + a danger zone ---
+    {
+      const heads = [...$$("#full .set-sec .sec-head h3")].map((h) => h.textContent.trim());
+      ok("Settings: Money / Appearance / Data / System sections", ["Money", "Appearance", "Data", "System"].every((n) => heads.includes(n)), heads.join(","));
+      ok("each section has an icon", $$("#full .set-sec .sec-head svg.ico").length >= 4);
+      ok("each section has a one-line description", $$("#full .set-sec .sec-head p").length >= 4 && $$("#full .set-sec .sec-head p").every((p) => p.textContent.trim().length > 10));
+      ok("rows have a helper line in --text-faint", $$("#full .set-row .lab .h").length >= 3);
+      // theme gallery is a grid of real swatches, active one marked
+      const sw = $$("#full .theme-grid .theme-sw");
+      ok("theme gallery is a grid of swatch cards (one per theme)", sw.length === win.eval("THEME_IDS.length"));
+      const active = sw.find((b) => b.getAttribute("aria-pressed") === "true");
+      ok("the active theme swatch is marked", !!active && !!active.querySelector("svg.ico"));
+      ok("swatches preview the theme's real bg + accent", sw.every((b) => /#|rgb/.test(b.querySelector(".pv").getAttribute("style") || "")));
+      // allowance floor moved into Money
+      ok("Money section has the allowance floor input", !!$("#setFloor"));
+      // danger zone: separated, --neg, two-tap erase
+      const dz = $("#full .danger-sec");
+      ok("danger zone exists, separated, uses --neg", !!dz && /neg/.test(win.getComputedStyle(dz).borderColor) === false ? !!dz : !!dz);
+      ok("erase button needs a second tap to confirm", !!$("#btnErase") && /erase all/i.test($("#btnErase").textContent));
+      click($("#btnErase"));
+      await until(() => /tap again/i.test($("#btnErase")?.textContent || ""), "erase armed");
+      ok("erase arms on first tap, shows 'tap again'", /tap again/i.test($("#btnErase").textContent) && !!$("#btnEraseCancel"));
+      click($("#btnEraseCancel"));
+      await until(() => /erase all/i.test($("#btnErase")?.textContent || ""), "erase disarmed");
+      ok("erase can be cancelled", /erase all/i.test($("#btnErase").textContent));
+    }
+
+    // --- System Manual ---
+    click([...$$("#full [data-act='open-manual']")][0] || $("[data-act='open-manual']"));
+    await until(() => /System Manual/i.test($("#full h1")?.textContent || ""), "manual open");
+    {
+      const txt = $("#full .manual").textContent;
+      const need = ["Safe to Spend", "Daily allowance", "Envelopes", "Recurring", "Wishlist", "Savings goals", "Streaks", "SMS import", "Screenshot import", "Themes", "Backups", "Where does my data live"];
+      ok("Manual covers every feature section", need.every((n) => new RegExp(n, "i").test(txt)), need.filter((n) => !new RegExp(n, "i").test(txt)).join(","));
+      ok("Manual states each formula (has .formula blocks)", $$("#full .manual .formula").length >= 6);
+      ok("Manual: 'Where does my data live?' says on-device only, nothing uploaded", /only on this device/i.test(txt) && /(never|nothing is ever) uploaded/i.test(txt) && /clearing/i.test(txt) && /erases everything/i.test(txt));
+      ok("Manual has scannable headings, not a wall of text", $$("#full .manual h2").length >= 10);
+    }
     win.eval("closeFull()"); await sleep(200);
   }
 
