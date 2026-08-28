@@ -564,7 +564,12 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   }
 
   ok("Monarch: panel shows an XP bar", !!$("#view .game-panel .xpbar > i"));
-  ok("Monarch: Home header shows the music toggle", !!$("#musicToggle"));
+  {
+    const orb = $("#musicOrb");
+    ok("Monarch: the floating music orb is present and shown", !!orb && !orb.hidden);
+    ok("music orb lives at app root, not in #view (survives navigation)", orb && !$("#view").contains(orb));
+    ok("music orb is a labelled button", orb && orb.tagName === "BUTTON" && /play|pause/i.test(orb.getAttribute("aria-label") || ""));
+  }
   {
     const audio = $("#themeAudio");
     ok("themeAudio element exists", !!audio);
@@ -598,20 +603,20 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   ok("music volume persists to meta", parseFloat(win.localStorage.getItem("rial:meta:musicVolume")) === 0.8);
   win.eval("closeFull()"); await sleep(200);
 
-  // tap-to-play falls back to the theme's declared src when no local file is stored
+  // tapping the orb falls back to the theme's declared src when no local file is stored
   win.eval('go("home")'); await sleep(50);
-  click($("#musicToggle"));
+  win.eval("themeMusic.toggle()");
   await sleep(50);
-  ok("tap-to-play uses the theme's declared src as fallback", $("#themeAudio").getAttribute("src") === "assets/theme-music.mp3");
+  ok("orb play uses the theme's declared src as fallback", $("#themeAudio").getAttribute("src") === "assets/theme-music.mp3");
 
-  // when the declared src 404s AND there's no local file, the control hides itself
+  // when the declared src 404s AND there's no local file, the orb hides itself
   {
     const realFetch = win.fetch;
     win.fetch = async () => ({ ok: false, status: 404 });
     await win.eval("(async () => { themeMusic.probed=''; themeMusic.missing=false; themeMusic._resetPlayback(); await themeMusic.probe(); })()");
     await sleep(60);
     win.eval('go("home")'); await sleep(40);
-    ok("declared src 404 + no local file -> header control hidden", !$("#musicToggle") || $("#musicToggle").hidden);
+    ok("declared src 404 + no local file -> orb hidden", !$("#musicOrb") || $("#musicOrb").hidden);
     win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings");
     ok("declared src 404 -> play row hidden but the file picker still shows", $("#monarchMusicPlay") && $("#monarchMusicPlay").hidden && !!$('label.filepick[for="musicFilePick"]'));
     win.eval("closeFull()"); await sleep(150);
@@ -638,7 +643,7 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   win.eval('applyThemeSmooth("midnight")'); await sleep(340);
   win.eval('go("home")'); await sleep(50);
   ok("non-Monarch: gamification panel gone", !$("#view .game-panel"));
-  ok("non-Monarch: music toggle gone", !$("#musicToggle"));
+  ok("non-Monarch (no local file): music orb hidden", !$("#musicOrb") || $("#musicOrb").hidden);
   ok("non-Monarch: audio source cleared", !$("#themeAudio").getAttribute("src"));
   ok("gameActive() is false off Monarch", win.eval("gameActive()") === false);
   win.eval('applyThemeSmooth("midnight")'); await sleep(100);

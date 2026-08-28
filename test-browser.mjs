@@ -256,7 +256,8 @@ const failedRequests = [];
           panel: !!document.querySelector("#view .game-panel"),
           quests: document.querySelectorAll("#view .game-panel .quest").length,
           xpbar: !!document.querySelector("#view .game-panel .xpbar > i"),
-          musicBtn: !!document.getElementById("musicToggle"),
+          orb: (() => { const o = document.getElementById("musicOrb"); return !!o && !o.hidden && o.tagName === "BUTTON"; })(),
+          orbAtRoot: (() => { const o = document.getElementById("musicOrb"); return !!o && o.parentElement === document.body; })(),
           audioNoSrc: (() => { const a = document.getElementById("themeAudio"); return !!a && !a.getAttribute("src"); })(),
           countSettled: num ? num.textContent === U.fmt(Math.round(target)) : false,
         };
@@ -264,7 +265,7 @@ const failedRequests = [];
       ok("monarch: gamification panel on the dashboard", gm.panel, JSON.stringify(gm));
       ok("monarch: three daily quests", gm.quests === 3, JSON.stringify(gm));
       ok("monarch: XP bar rendered", gm.xpbar, JSON.stringify(gm));
-      ok("monarch: tap-to-play music toggle in the header", gm.musicBtn, JSON.stringify(gm));
+      ok("monarch: floating music orb shown, at app root", gm.orb && gm.orbAtRoot, JSON.stringify(gm));
       ok("monarch: <audio> carries no src until tapped (no network hit)", gm.audioNoSrc, JSON.stringify(gm));
       ok("monarch: count-up lands on the real value", gm.countSettled, JSON.stringify(gm));
     }
@@ -388,11 +389,11 @@ const failedRequests = [];
       blobInMemory: !!themeMusic.localBlob,
       decodeOk: themeMusic.decodeOk,
       playable: themeMusic.playable(),
-      btnVisible: (() => { const b = document.getElementById("musicToggle"); return !!b && !b.hidden; })(),
+      orbVisible: (() => { const o = document.getElementById("musicOrb"); return !!o && !o.hidden; })(),
     }));
     ok("music: picked file persists across a reload (name + size)", afterReload.name === "my song.mp3" && afterReload.size > 1000 && afterReload.hasLocal, JSON.stringify(afterReload));
     ok("music: Blob re-loaded into memory + re-verified after reload", afterReload.blobInMemory && afterReload.decodeOk === true, JSON.stringify(afterReload));
-    ok("music: control is available after reload", afterReload.playable && afterReload.btnVisible, JSON.stringify(afterReload));
+    ok("music: orb is available after reload", afterReload.playable && afterReload.orbVisible, JSON.stringify(afterReload));
 
     // Remove music file -> back to the declared-src fallback
     const removed = await page.evaluate(async () => {

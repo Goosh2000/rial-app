@@ -306,6 +306,51 @@ nav#tabs .addslot{ position:relative; }
 #addBtn:active{ transform:translateX(-50%) scale(.9); }
 #addBtn .ico{ width:26px; height:26px; }
 
+/* ---- floating music orb (one control, app root, never re-created) ---- */
+#musicOrb{
+  position:fixed; z-index:45;
+  right:calc(env(safe-area-inset-right) + 14px);
+  bottom:calc(env(safe-area-inset-bottom) + 84px);
+  width:52px; height:52px; padding:0; border:0; background:transparent;
+  display:grid; place-items:center;
+  opacity:1; transition:opacity .4s ease, transform .18s var(--spring);
+  --orb-level:0;
+}
+#musicOrb[hidden]{ display:none; }
+#musicOrb::before{ content:""; position:absolute; inset:-8px; }   /* 68px hit area >= 44px */
+#musicOrb:active{ transform:scale(.92); }
+#musicOrb.dim{ opacity:.35; }
+#musicOrb svg{ width:52px; height:52px; overflow:visible; }
+#musicOrb .orb-track,#musicOrb .orb-spin,#musicOrb .orb-prog{ fill:none; stroke-linecap:round; transform-box:fill-box; transform-origin:center; }
+#musicOrb .orb-track{
+  stroke:color-mix(in srgb, var(--accent) 32%, transparent); stroke-width:1;
+}
+#musicOrb::after{                                  /* the disc + glow, sized so we can pulse it */
+  content:""; position:absolute; width:52px; height:52px; border-radius:50%;
+  background:color-mix(in srgb, var(--bg-elev) 78%, transparent);
+  backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+  border:1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  box-shadow:0 4px 16px rgba(0,0,0,.45),
+    0 0 calc(6px + var(--orb-level) * 22px) color-mix(in srgb, var(--accent) calc(18% + var(--orb-level) * 45%), transparent);
+  z-index:-1;
+}
+#musicOrb .orb-spin{ stroke:url(#orbGrad); stroke-width:calc(2 + var(--orb-level) * 2.5);
+  stroke-dasharray:34 104; opacity:0; transition:opacity .3s ease; }
+#musicOrb .orb-prog{ stroke:color-mix(in srgb, var(--accent) 60%, transparent); stroke-width:2;
+  stroke-dasharray:113; stroke-dashoffset:113; transform:rotate(-90deg); opacity:0; transition:opacity .3s ease; }
+#musicOrb .orb-glyph{ fill:var(--accent); }
+#musicOrb .orb-pause{ display:none; }
+#musicOrb.playing .orb-spin{ opacity:1; animation:orb-rotate 2.8s linear infinite; }
+#musicOrb.playing .orb-prog{ opacity:1; }
+#musicOrb.playing .orb-play{ display:none; }
+#musicOrb.playing .orb-pause{ display:block; }
+@keyframes orb-rotate{ to{ transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce){
+  #musicOrb .orb-spin{ display:none; }                         /* no rotation */
+  #musicOrb.playing .orb-prog{ opacity:1; stroke-width:2.5; }  /* simple filled/unfilled progress ring */
+  #musicOrb::after{ box-shadow:0 4px 16px rgba(0,0,0,.45); }   /* no glow pulse */
+}
+
 /* ---- [4] COMPONENTS ------------------------------------------------- */
 .card{ background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px; margin-bottom:14px; }
 .card.tight{ padding:12px 14px; }
@@ -484,6 +529,20 @@ img{ max-width:100%; }
 <div class="toast" id="toast"></div>
 <div id="themeFade" aria-hidden="true"></div>
 <audio id="themeAudio" preload="none"></audio>
+<input type="file" id="musicFilePick" class="vh-input" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.flac,.opus" />
+<button id="musicOrb" aria-label="Play theme music" hidden>
+  <svg viewBox="0 0 52 52" aria-hidden="true">
+    <defs><linearGradient id="orbGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="var(--accent)"/>
+      <stop offset="1" stop-color="color-mix(in srgb, var(--accent) 45%, #ffffff)"/>
+    </linearGradient></defs>
+    <circle class="orb-track" cx="26" cy="26" r="22"/>
+    <circle class="orb-spin"  cx="26" cy="26" r="22"/>
+    <circle class="orb-prog"  cx="26" cy="26" r="18"/>
+    <path   class="orb-glyph orb-play"  d="M21 17l14 9-14 9z"/>
+    <path   class="orb-glyph orb-pause" d="M20 17h5v18h-5zM27 17h5v18h-5z"/>
+  </svg>
+</button>
 <div id="questComplete" hidden></div>
 
 <script>
@@ -1505,7 +1564,6 @@ function pageheadHTML(title, sub){
   return `<div class="pagehead">
     <div><h1>${esc(title)}</h1>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</div>
     <div class="hdr">
-      ${themeMusic.spec() ? `<button id="musicToggle" class="hdr-btn" aria-label="Play theme music">${svgIcon("music")}</button>` : ""}
       <button id="bell" class="hdr-btn" aria-label="Notifications">${svgIcon("bell")}${nc?`<span class="badge-dot">${nc}</span>`:""}</button>
       <button id="settingsBtn" class="hdr-btn" aria-label="Settings">${svgIcon("gear")}</button>
     </div>
@@ -1516,9 +1574,6 @@ function pageheadHTML(title, sub){
 function wireScreen(){
   document.querySelectorAll("[data-open]").forEach(el =>
     el.addEventListener("click", () => openOverlay(el.dataset.open)));
-
-  const mt = document.getElementById("musicToggle");
-  if (mt) mt.addEventListener("click", () => themeMusic.toggle());
 
   const s = document.getElementById("txSearch");
   if (s) s.addEventListener("input", () => { txFilter.q = s.value; const pos = s.selectionStart;
@@ -3231,7 +3286,6 @@ function settingsHTML(){
           <label class="btn sm filepick" for="musicFilePick" role="button" tabindex="0">Choose music file</label>
           ${s.musicFileName ? `<button class="btn sm ghost danger" id="btnRemoveMusic">Remove music file</button>` : ""}
         </div>
-        <input type="file" id="musicFilePick" class="vh-input" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.flac,.opus" />
         <div class="tiny faint" style="margin-top:6px">
           ${s.musicFileName
             ? `Playing <b>${esc(s.musicFileName)}</b>${s.musicFileSize ? ` · ${fmtBytes(s.musicFileSize)}` : ""} from this device.`
@@ -3353,8 +3407,8 @@ FULL.addEventListener("click", async (e) => {
 FULL.addEventListener("input", (e) => {
   if (e.target.id === "setMusicVol") themeMusic.setVolume(e.target.value);
 });
-// keyboard a11y for the file-pick <label> (pointer/touch already works natively via `for=`)
-FULL.addEventListener("keydown", (e) => {
+// keyboard a11y for the file-pick <label> — works from Settings OR the orb's music sheet
+document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " " || e.key === "Spacebar") &&
       e.target.classList && e.target.classList.contains("filepick")){
     e.preventDefault();
@@ -3362,19 +3416,20 @@ FULL.addEventListener("keydown", (e) => {
     if (inp) inp.click();                                 // synchronous, inside the keydown gesture
   }
 });
-FULL.addEventListener("change", async (e) => {
-  if (e.target.id === "musicFilePick"){
-    const f = e.target.files && e.target.files[0];
-    e.target.value = "";                                  // let the same file be re-picked later
-    if (!f){
-      toast("No file selected. If files looked greyed out, re-save the track as MP3 or M4A and try again.");
-      return;
-    }
-    await themeMusic.setLocalFile(f);
-    await refresh();
-    openFull(settingsHTML());
+// the file input lives at app root; handle its change here (bubbles to document)
+document.getElementById("musicFilePick").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";                                    // let the same file be re-picked later
+  if (!f){
+    toast("No file selected. If files looked greyed out, re-save the track as MP3 or M4A and try again.");
     return;
   }
+  await themeMusic.setLocalFile(f);
+  await refresh();
+  if (SHEET.classList.contains("open")) openMusicPanel();
+  else if (FULL.classList.contains("open")) openFull(settingsHTML());
+});
+FULL.addEventListener("change", async (e) => {
   if (e.target.id === "fileImport" && e.target.files[0]){
     try {
       const txt = await e.target.files[0].text();
@@ -4742,6 +4797,9 @@ const themeMusic = {
   el: null, wired: false, missing: false, started: false, seekPending: null, probed: "", objUrl: null,
   localBlob: null,          // the File/Blob, held in memory so first-play needs NO await before .play() (iOS)
   decodeOk: null,           // true | false | null(unknown) — from a silent metadata probe
+  orb: null, orbBound: false,
+  _ctx: null, _srcNode: null, _analyser: null, _freq: null, _level: 0, _raf: 0,
+  _dimT: 0, _lpT: 0, _downAt: 0,
   spec(){ return (THEME_REG[currentThemeId()] || {}).music || null; },
   hasLocal(){ return !!(S.settings && S.settings.musicFileName) && !DB.fallback; },
   get localBroken(){ return this.hasLocal() && this.decodeOk === false; },
@@ -4846,6 +4904,115 @@ const themeMusic = {
       if (Math.abs(this.el.currentTime - want) < 1.5) this.seekPending = null;
     } catch(_){}
   },
+
+  /* ---- the floating orb --------------------------------------------------- */
+  startAt(){ const sp = this.spec(); return sp ? (sp.startAt || 0) : 0; },
+  loopFrac(){                                             // position within the loop, 0..1
+    if (!this.el) return 0;
+    const s = this.startAt();
+    const end = (this.el.duration && isFinite(this.el.duration)) ? this.el.duration : 0;
+    if (!end || end <= s) return 0;
+    return U.clamp((this.el.currentTime - s) / (end - s), 0, 1);
+  },
+  /* build the Web Audio graph once, INSIDE a user gesture. After this the element's
+   * audio flows through the analyser -> destination, so the connect() is mandatory. */
+  _ensureGraph(){
+    if (this._analyser || !this.el) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      this._ctx = new AC();
+      this._srcNode = this._ctx.createMediaElementSource(this.el);
+      this._analyser = this._ctx.createAnalyser();
+      this._analyser.fftSize = 64;
+      this._analyser.smoothingTimeConstant = 0.75;
+      this._freq = new Uint8Array(this._analyser.frequencyBinCount);
+      this._srcNode.connect(this._analyser);
+      this._analyser.connect(this._ctx.destination);
+    } catch(_) { this._analyser = null; this._srcNode = null; this._ctx = null; }
+  },
+  _tabHidden(){ try { return document.hidden; } catch(_) { return false; } },
+  _loopRunning(){ return !!this._raf; },
+  _startLoop(){
+    if (this._raf || prefersReducedMotion()) { this._paintStatic(); return; }
+    if (this._tabHidden() || !this.playing()) return;
+    if (this._ctx && this._ctx.state === "suspended") this._ctx.resume().catch(()=>{});
+    const step = () => {
+      if (!this.playing() || this._tabHidden()){ this._stopLoop(); return; }
+      let target = 0;
+      if (this._analyser){
+        this._analyser.getByteFrequencyData(this._freq);
+        let sum = 0, n = Math.min(12, this._freq.length);
+        for (let i = 0; i < n; i++) sum += this._freq[i];
+        target = (sum / n) / 255;                         // 0..1, weighted to the low end
+      } else {
+        target = 0.35 + 0.15 * Math.sin(performance.now() / 320);   // gentle breath if no analyser
+      }
+      this._level += (target - this._level) * 0.18;       // smoothing -> breathes, doesn't jitter
+      if (this.orb){
+        this.orb.style.setProperty("--orb-level", this._level.toFixed(3));
+        this.orb.style.setProperty("--orb-frac", this.loopFrac().toFixed(3));
+        const prog = this.orb.querySelector(".orb-prog");
+        if (prog) prog.style.strokeDashoffset = (113 * (1 - this.loopFrac())).toFixed(1);
+      }
+      this._raf = requestAnimationFrame(step);
+    };
+    this._raf = requestAnimationFrame(step);
+  },
+  _stopLoop(){
+    if (this._raf){ cancelAnimationFrame(this._raf); this._raf = 0; }
+    this._level = 0;
+    if (this.orb) this.orb.style.setProperty("--orb-level", "0");
+    if (this._ctx && this._ctx.state === "running" && !this.playing()) this._ctx.suspend().catch(()=>{});
+  },
+  _paintStatic(){                                         // reduced-motion / paused: just the progress ring
+    if (!this.orb) return;
+    const f = this.playing() ? this.loopFrac() : 0;
+    this.orb.style.setProperty("--orb-frac", f.toFixed(3));
+    const prog = this.orb.querySelector(".orb-prog");
+    if (prog) prog.style.strokeDashoffset = (113 * (1 - f)).toFixed(1);
+  },
+  _bindOrb(){
+    this.orb = document.getElementById("musicOrb");
+    if (!this.orb || this.orbBound) return;
+    this.orbBound = true;
+
+    // tap = toggle · long-press (500ms) = open the music panel
+    const clearLP = () => { if (this._lpT){ clearTimeout(this._lpT); this._lpT = 0; } };
+    this.orb.addEventListener("pointerdown", (e) => {
+      this._downAt = Date.now();
+      clearLP();
+      this._lpT = setTimeout(() => { this._lpT = 0; this._downAt = 0; openMusicPanel(); }, 500);
+    });
+    this.orb.addEventListener("pointerup", () => {
+      if (!this._downAt){ clearLP(); return; }            // long-press already fired
+      clearLP();
+      if (Date.now() - this._downAt < 500) this.toggle();
+      this._downAt = 0;
+    });
+    this.orb.addEventListener("pointercancel", () => { clearLP(); this._downAt = 0; });
+    this.orb.addEventListener("pointermove", (e) => {
+      if (this._downAt && (Math.abs(e.movementX) + Math.abs(e.movementY) > 8)){ clearLP(); this._downAt = 0; }
+    });
+    this.orb.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar"){ e.preventDefault(); this.toggle(); }
+    });
+    this.orb.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // fade while the screen scrolls, restore 400ms after it stops
+    const view = document.getElementById("view");
+    if (view) view.addEventListener("scroll", () => {
+      this.orb.classList.add("dim");
+      if (this._dimT) clearTimeout(this._dimT);
+      this._dimT = setTimeout(() => this.orb.classList.remove("dim"), 400);
+    }, { passive: true });
+
+    document.addEventListener("visibilitychange", () => {
+      if (this._tabHidden()) this._stopLoop();
+      else if (this.playing()) this._startLoop();
+    });
+  },
+
   async attach(){
     this.el = document.getElementById("themeAudio");
     if (!this.el) return;
@@ -4874,7 +5041,10 @@ const themeMusic = {
         else { this.missing = true; this.started = false; }
         this.render();
       });
+      this.el.addEventListener("play",  () => { this.render(); this._startLoop(); });
+      this.el.addEventListener("pause", () => { this.render(); this._stopLoop(); this._paintStatic(); });
     }
+    this._bindOrb();
     this.render();
     this.probe();
     // eagerly load the stored Blob so the FIRST tap-to-play has no await before .play() (iOS gesture rule)
@@ -4904,6 +5074,8 @@ const themeMusic = {
       this.el.src = url;
       this.started = true;
     }
+    this._ensureGraph();                                  // build the analyser graph inside this gesture (iOS)
+    if (this._ctx && this._ctx.state === "suspended") this._ctx.resume().catch(()=>{});
     this.seekPending = sp.startAt || 0;
     this._applyStart();
     const t0 = this.el.currentTime || 0;
@@ -4912,6 +5084,7 @@ const themeMusic = {
     try { p = this.el.play(); } catch(err){ p = Promise.reject(err); }
     Promise.resolve(p).then(() => {
       this._applyStart();
+      this._startLoop();
       this.render();
       // iOS "silent switch": play() succeeded but no sound + the clock never advanced -> ringer switch is muted
       setTimeout(() => {
@@ -4940,21 +5113,50 @@ const themeMusic = {
     this.missing = false; this.probed = "";
     this.render();
   },
-  render(){                                               // reflect state onto any live controls
+  render(){                                               // reflect state onto the orb + any settings controls
     const show = this.playable();
-    const btn = document.getElementById("musicToggle");
-    if (btn){
-      btn.hidden = !show;
-      btn.innerHTML = this.playing() ? svgIcon("musicPause") : svgIcon("music");
-      btn.setAttribute("aria-label", this.playing() ? "Pause theme music" : "Play theme music");
-      btn.classList.toggle("playing", this.playing());
+    const playing = this.playing();
+    const orb = this.orb || (this.orb = document.getElementById("musicOrb"));
+    if (orb){
+      orb.hidden = !show;
+      orb.classList.toggle("playing", playing);
+      orb.setAttribute("aria-label", playing ? "Pause music (long-press for options)" : "Play music (long-press for options)");
+      orb.setAttribute("aria-pressed", String(playing));
+      if (!orb.hasAttribute("tabindex")) orb.setAttribute("tabindex", "0");
+      if (!playing) this._paintStatic();
     }
     const sBtn = document.getElementById("setMusicToggle");
-    if (sBtn) sBtn.textContent = this.playing() ? "Pause" : "Play";
+    if (sBtn) sBtn.textContent = playing ? "Pause" : "Play";
     const playRow = document.getElementById("monarchMusicPlay");
     if (playRow) playRow.hidden = !show;
+    const mp = document.getElementById("mpToggle");
+    if (mp) mp.textContent = playing ? "Pause" : "Play";
   },
 };
+/* long-press on the orb: a small sheet with volume, file, and the track name */
+function openMusicPanel(){
+  const s = S.settings;
+  const name = s.musicFileName ? esc(s.musicFileName) : ((THEME_REG[currentThemeId()]||{}).music ? "theme track" : "");
+  openSheet(`
+    <h2>Music</h2>
+    <div class="row between" style="margin-bottom:12px">
+      <div class="tiny faint">${name ? `Now: <b>${name}</b>${s.musicFileSize?` · ${fmtBytes(s.musicFileSize)}`:""}` : "No track available"}</div>
+      <button class="btn sm" id="mpToggle">${themeMusic.playing() ? "Pause" : "Play"}</button>
+    </div>
+    <label class="tiny faint" for="mpVol">Volume</label>
+    <input type="range" class="rng" id="mpVol" min="0" max="1" step="0.01" value="${s.musicVolume ?? 0.5}" style="width:100%"/>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:14px">
+      <label class="btn sm filepick" for="musicFilePick" role="button" tabindex="0">Choose music file</label>
+      ${s.musicFileName ? `<button class="btn sm ghost danger" id="mpRemove">Remove file</button>` : ""}
+    </div>
+    ${themeMusic.localBroken ? `<div class="tiny" style="color:var(--neg);margin-top:6px">This file won't decode in your browser — try MP3 or M4A.</div>` : ""}
+    <div class="tiny faint" style="margin-top:8px">Tap the orb to play/pause. The file is stored only on this device.</div>
+  `);
+  SHEET.querySelector("#mpToggle").addEventListener("click", () => { themeMusic.toggle(); const b = SHEET.querySelector("#mpToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; });
+  SHEET.querySelector("#mpVol").addEventListener("input", (e) => themeMusic.setVolume(e.target.value));
+  const rm = SHEET.querySelector("#mpRemove");
+  if (rm) rm.addEventListener("click", async () => { await themeMusic.removeLocalFile(); await refresh(); closeSheet(); });
+}
 function musicExt(file){
   const n = (file && file.name || "").toLowerCase();
   const m = /\.([a-z0-9]+)$/.exec(n);

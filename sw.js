@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "20";  // v20: streaks count real calendar days (gap detection, firstUseDate, neutral no-plan days)
+const SW_VERSION = "21";  // v21: floating music orb (AnalyserNode-driven ring + progress, long-press panel)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [
