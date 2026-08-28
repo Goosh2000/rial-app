@@ -53,14 +53,25 @@ picker, and the tests all read the generated registry.
 
 ### `music` runtime rules
 
-* **Tap-to-play only** — never autoplay, never auto-resume after a reload. A ♪ control
-  appears in the Home header (and in Settings) while the theme is active.
-* The `<audio>` element lives outside the screen container, so playback **survives tab
-  navigation**. It stops when you switch away from the theme.
-* **Volume** has a slider in Settings; the level is remembered (`musicVolume` meta).
-* If the file 404s or fails to decode, the control **hides itself** — the theme is still
-  fully usable. The file is fetched only on the first tap, so a missing file costs nothing.
-* `src` is never fetched cross-origin; the service worker caches it after first play.
+* **Tap-to-play only** — never autoplay, never auto-resume after a reload. A floating
+  circular control (the "orb", bottom-right) appears whenever a playable track exists for
+  the active theme — not only for themes that declare a `music` block.
+* The `<audio>` element and the audio-analyser graph live at app root; playback **survives
+  tab navigation** and theme switches when the resolved source doesn't change.
+* **Volume** is remembered (`musicVolume` meta). Long-press the orb for the panel
+  (volume · choose/remove files · current track).
+* **Source precedence** for the active theme:
+  1. a file the user assigned to **this specific theme** (`musicOverride:<themeId>` blob;
+     name in the `musicOverrides` `{id:name}` meta map)
+  2. the theme's own **declared `music.src`**, if it's reachable (probed once)
+  3. the **shared device-local file** (`musicFile` blob) — one file, every theme
+  4. nothing → the orb hides itself
+* The declared block's `startAt` / `loop` apply only to the declared `src`. Any local file
+  (shared or per-theme) plays from `0` and loops.
+* All music blobs are **device-local**: stored in IndexedDB, never uploaded, never in the
+  JSON backup (only the `musicOverrides` name map is, so a restore knows what's missing).
+* If a chosen file fails to decode, that source is skipped and the next in precedence is
+  used; if none work, the orb hides. `src` is never fetched cross-origin.
 
 ### Token contract (defined by `base.theme.json`, which is **locked**)
 

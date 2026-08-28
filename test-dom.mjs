@@ -576,32 +576,28 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     ok("themeAudio lives outside #view (survives tab nav)", audio && !$("#view").contains(audio));
     ok("themeAudio has no src before a tap (no network hit)", audio && !audio.getAttribute("src"));
   }
-  // volume slider + "Choose music file" in Settings
-  win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings open");
-  ok("Settings: Monarch music volume slider present", !!$("#setMusicVol"));
+  // the single file input lives at app root and is visually-hidden (iOS-safe), never display:none
   {
-    const lbl = $('label.filepick[for="musicFilePick"]');
     const inp = $("#musicFilePick");
-    ok("Settings: 'Choose music file' is a <label for> (not a JS button)", !!lbl && !!inp && lbl.tagName === "LABEL");
-    ok("file input is NOT hidden (iOS refuses display:none pickers)", inp && !inp.hidden && !/display:\s*none/.test(win.getComputedStyle(inp).display || ""));
+    ok("file input exists at app root", !!inp && inp.parentElement === doc.body);
+    ok("file input is NOT hidden (iOS refuses display:none pickers)", inp && !inp.hidden && win.getComputedStyle(inp).display !== "none");
     ok("file input is visually hidden via CSS, still in layout", inp && win.getComputedStyle(inp).position === "absolute" && parseFloat(win.getComputedStyle(inp).opacity) === 0);
-    ok("file input accept is broadened beyond audio/*", /\.mp3/.test(inp.getAttribute("accept")) && /\.m4a/.test(inp.getAttribute("accept")) && /audio\/\*/.test(inp.getAttribute("accept")));
-    ok("label is keyboard-focusable", lbl.getAttribute("tabindex") === "0");
-    const h = parseFloat(win.getComputedStyle(lbl).minHeight);
-    ok("label has a >=44px touch target", h >= 44, String(h));
-    // Enter on the focused label opens the picker (synchronously)
-    let opened = false; const realClick = inp.click; inp.click = () => { opened = true; };
-    lbl.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    inp.click = realClick;
-    ok("Enter on the label triggers the file input", opened);
+    ok("file input accept is broadened beyond audio/*", /\.mp3/.test(inp.accept) && /\.m4a/.test(inp.accept) && /audio\/\*/.test(inp.accept));
   }
-  ok("Settings: warns the file lives only in this browser", /only in this browser/i.test($("#full").textContent));
-  ok("Settings: Troubleshooting shows a music diagnostic line", /Theme music:/i.test($("#full").textContent));
-  ok("Settings: no 'Remove music file' until one is chosen", !$("#btnRemoveMusic"));
-  setVal($("#setMusicVol"), "0.8");
+  // long-press the orb -> music panel with volume, source line, and both scoped pickers
+  win.eval("openMusicPanel()"); await until(() => $("#sheet.open"), "music panel");
+  ok("music panel: volume slider present", !!$("#mpVol"));
+  ok("music panel: shows what's playing now", /now:/i.test($("#sheet").textContent));
+  {
+    const gl = $('label.filepick[data-scope="global"]'), th = $('label.filepick[data-scope="theme"]');
+    ok("music panel: a 'shared' file picker and a per-theme picker", !!gl && !!th && gl.tagName === "LABEL" && th.tagName === "LABEL");
+    ok("both pickers are keyboard-focusable labels for #musicFilePick", gl.getAttribute("for") === "musicFilePick" && th.getAttribute("tabindex") === "0");
+  }
+  ok("music panel: warns files stay on this device", /only on this device/i.test($("#sheet").textContent));
+  setVal($("#mpVol"), "0.8");
   await sleep(30);
   ok("music volume persists to meta", parseFloat(win.localStorage.getItem("rial:meta:musicVolume")) === 0.8);
-  win.eval("closeFull()"); await sleep(200);
+  win.eval("closeSheet()"); await sleep(150);
 
   // tapping the orb falls back to the theme's declared src when no local file is stored
   win.eval('go("home")'); await sleep(50);
@@ -617,9 +613,9 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     await sleep(60);
     win.eval('go("home")'); await sleep(40);
     ok("declared src 404 + no local file -> orb hidden", !$("#musicOrb") || $("#musicOrb").hidden);
-    win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings");
-    ok("declared src 404 -> play row hidden but the file picker still shows", $("#monarchMusicPlay") && $("#monarchMusicPlay").hidden && !!$('label.filepick[for="musicFilePick"]'));
-    win.eval("closeFull()"); await sleep(150);
+    win.eval("openMusicPanel()"); await until(() => $("#sheet.open"), "music panel");
+    ok("declared src 404 -> panel still offers the file pickers", !!$('label.filepick[data-scope="global"]') && !!$('label.filepick[data-scope="theme"]'));
+    win.eval("closeSheet()"); await sleep(150);
     win.fetch = realFetch;
     await win.eval("(async () => { themeMusic.probed=''; themeMusic.missing=false; await themeMusic.probe(); })()");
     await sleep(60);

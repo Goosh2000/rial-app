@@ -712,7 +712,7 @@ const DB = (() => {
                     "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","streakEverScored","firstUseDate","icsExportedAt",
                     "themeSchedule","themeManual","userThemes",
                     "smsParserPatterns","merchantRules","allowanceFloor","allowanceStreak","allowanceStreakDate",
-                    "game","musicVolume"];
+                    "game","musicVolume","musicOverrides"];
       for (const k of keys) out.meta[k] = await api.meta(k);
       return out;
     },
@@ -803,6 +803,7 @@ async function refresh(){
     musicFileName: await DB.meta("musicFileName", null),   // name only; the Blob lives under "musicFile"
     musicFileSize: await DB.meta("musicFileSize", 0),
     musicFileType: await DB.meta("musicFileType", ""),
+    musicOverrides: await DB.meta("musicOverrides", {}),   // { <themeId>: fileName } — blobs live under "musicOverride:<id>"
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -3267,37 +3268,25 @@ function settingsHTML(){
   ${(() => {
     const active = currentThemeId();
     const reg = THEME_REG[active] || {};
-    if (!reg.music && reg.module !== "gamification") return "";
     const lv = levelFor((s.game||{}).xp);
+    const gamiRow = reg.module === "gamification"
+      ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${streakDisplay().tracked ? streakDisplay().text + " day" + (streakDisplay().text==="1"?"":"s") : "streak not tracked yet"}</div>`
+      : "";
+    if (!gamiRow) return "";                              // the music card lives under Appearance now
     return `
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">${esc(themeName(active))}</h3>
-    ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px;display:flex;align-items:center;gap:5px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · ${svgIcon("flame")} ${streakDisplay().tracked ? streakDisplay().text + " day" + (streakDisplay().text==="1"?"":"s") : "streak not tracked yet"}</div>` : ""}
-    ${reg.music ? `<div id="monarchMusicRow">
-      <div id="monarchMusicPlay"${themeMusic.playable()?"":" hidden"}>
-        <div class="row between" style="margin-bottom:8px"><span class="tiny">Theme music</span>
-          <button class="btn sm" id="setMusicToggle">${themeMusic.playing()?"Pause":"Play"}</button></div>
-        <label class="tiny faint" for="setMusicVol">Volume</label>
-        <input type="range" class="rng" id="setMusicVol" min="0" max="1" step="0.01" value="${s.musicVolume ?? 0.5}" style="width:100%"/>
-        <div class="tiny faint" style="margin-top:6px">Tap-to-play only. Starts at ${reg.music.startAt||0}s and loops seamlessly. Keeps playing as you move between tabs; stops when you leave the theme.</div>
-      </div>
-      <div style="margin-top:10px">
-        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-          <label class="btn sm filepick" for="musicFilePick" role="button" tabindex="0">Choose music file</label>
-          ${s.musicFileName ? `<button class="btn sm ghost danger" id="btnRemoveMusic">Remove music file</button>` : ""}
-        </div>
-        <div class="tiny faint" style="margin-top:6px">
-          ${s.musicFileName
-            ? `Playing <b>${esc(s.musicFileName)}</b>${s.musicFileSize ? ` · ${fmtBytes(s.musicFileSize)}` : ""} from this device.`
-            : `No file chosen${themeMusic.playable() ? " — using the theme's built-in track" : ""}.`}
-          <br>Any audio file works — MP3, M4A/AAC, WAV, OGG. Stored <b>only in this browser</b>; clearing site data or moving to another device loses it.
-        </div>
-        ${themeMusic.localBroken ? `<div class="tiny" style="color:var(--neg);margin-top:4px">This file won't decode in your browser. Try re-saving it as MP3 or M4A.</div>` : ""}
-        ${DB.fallback ? `<div class="tiny" style="color:var(--warn);margin-top:4px">This browser has no IndexedDB, so a local music file can't be stored here.</div>` : ""}
-      </div>
-    </div>` : ""}
+    ${gamiRow}
   </div>`;
   })()}
+
+  ${DB.fallback ? "" : `
+  <div class="card">
+    <div class="row between" style="margin-bottom:6px"><h3 style="font-size:15px">Music</h3>
+      <button class="btn sm" id="btnMusicPanel">${themeMusic.playing() ? "Pause" : (themeMusic.playable() ? "Play" : "Set up")}</button></div>
+    <div class="tiny faint">Now: ${musicSourceLine()}. Tap the floating orb on any screen to play; long-press it for these options. One shared track, plus an optional per-theme track. Files stay on this device only.</div>
+    <button class="btn sm block ghost" id="btnMusicOptions" style="margin-top:10px">Music options</button>
+  </div>`}
 
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">Add transactions</h3>
@@ -3397,9 +3386,7 @@ FULL.addEventListener("click", async (e) => {
     await refresh(); toast("Saved"); openFull(settingsHTML());
   }
   if (e.target.id === "setSound"){ await DB.setMeta("soundOn", !S.settings.soundOn); await refresh(); openFull(settingsHTML()); }
-  if (e.target.id === "setMusicToggle"){ themeMusic.toggle(); const b = document.getElementById("setMusicToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; return; }
-  // "Choose music file" is a real <label for="musicFilePick"> — pointer/touch needs NO JS (the only pattern iOS honours).
-  if (e.target.id === "btnRemoveMusic"){ await themeMusic.removeLocalFile(); await refresh(); openFull(settingsHTML()); return; }
+  if (e.target.id === "btnMusicPanel" || e.target.id === "btnMusicOptions"){ openMusicPanel(); return; }
   if (e.target.id === "btnExport"){ await doExport(); openFull(settingsHTML()); }
   if (e.target.id === "btnImport"){ document.getElementById("fileImport").click(); }
   if (e.target.id === "btnReset"){ await resetApp(); }
@@ -3407,11 +3394,17 @@ FULL.addEventListener("click", async (e) => {
 FULL.addEventListener("input", (e) => {
   if (e.target.id === "setMusicVol") themeMusic.setVolume(e.target.value);
 });
+// a .filepick label carries data-scope ("global" | "theme"); remember which one was tapped
+document.addEventListener("pointerdown", (e) => {
+  const l = e.target.closest && e.target.closest(".filepick");
+  if (l) themeMusic._pickScope = l.dataset.scope === "theme" ? "theme" : "global";
+}, true);
 // keyboard a11y for the file-pick <label> — works from Settings OR the orb's music sheet
 document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " " || e.key === "Spacebar") &&
       e.target.classList && e.target.classList.contains("filepick")){
     e.preventDefault();
+    themeMusic._pickScope = e.target.dataset.scope === "theme" ? "theme" : "global";
     const inp = document.getElementById("musicFilePick");
     if (inp) inp.click();                                 // synchronous, inside the keydown gesture
   }
@@ -3419,12 +3412,14 @@ document.addEventListener("keydown", (e) => {
 // the file input lives at app root; handle its change here (bubbles to document)
 document.getElementById("musicFilePick").addEventListener("change", async (e) => {
   const f = e.target.files && e.target.files[0];
+  const scope = themeMusic._pickScope; themeMusic._pickScope = "global";
   e.target.value = "";                                    // let the same file be re-picked later
   if (!f){
     toast("No file selected. If files looked greyed out, re-save the track as MP3 or M4A and try again.");
     return;
   }
-  await themeMusic.setLocalFile(f);
+  if (scope === "theme") await themeMusic.setThemeOverride(f);
+  else await themeMusic.setLocalFile(f);
   await refresh();
   if (SHEET.classList.contains("open")) openMusicPanel();
   else if (FULL.classList.contains("open")) openFull(settingsHTML());
@@ -4795,19 +4790,49 @@ const MUSIC_FILE_MAX = 25 * 1024 * 1024;   // 25 MB — one song, safe for mobil
 
 const themeMusic = {
   el: null, wired: false, missing: false, started: false, seekPending: null, probed: "", objUrl: null,
-  localBlob: null,          // the File/Blob, held in memory so first-play needs NO await before .play() (iOS)
-  decodeOk: null,           // true | false | null(unknown) — from a silent metadata probe
-  orb: null, orbBound: false,
+  localBlob: null,          // the GLOBAL file/Blob, held in memory so first-play needs NO await before .play() (iOS)
+  decodeOk: null,           // true | false | null(unknown) — decode probe of the global file
+  ovBlob: null, ovId: "", ovDecodeOk: null,   // the per-theme override for the CURRENT theme
+  orb: null, orbBound: false, _playingKey: "", _pickScope: "global",
   _ctx: null, _srcNode: null, _analyser: null, _freq: null, _level: 0, _raf: 0,
   _dimT: 0, _lpT: 0, _downAt: 0,
   spec(){ return (THEME_REG[currentThemeId()] || {}).music || null; },
   hasLocal(){ return !!(S.settings && S.settings.musicFileName) && !DB.fallback; },
+  overrideName(){ return (S.settings && S.settings.musicOverrides || {})[currentThemeId()] || null; },
   get localBroken(){ return this.hasLocal() && this.decodeOk === false; },
-  async probe(){                                          // cheap check so a missing declared src hides the control up front
+  /* Resolve what should play for the active theme. Precedence (see THEME-SPEC.md):
+   *   1. a file the user assigned to THIS theme   2. the theme's declared music.src (if reachable)
+   *   3. the shared device-local file             4. nothing -> hide the orb
+   * The declared block's startAt/loop apply only to the declared src; any local file plays from 0. */
+  _resolve(){
     const sp = this.spec();
-    if (!sp || this.started) return;
-    if (this.hasLocal() && this.decodeOk !== false){ this.missing = false; this.render(); return; }
-    // no local file, OR a broken one -> we depend on the theme's declared src; is it actually there?
+    if (this.overrideName() && this.ovId === currentThemeId() && this.ovBlob && this.ovDecodeOk !== false)
+      return { kind: "override", blob: this.ovBlob, name: this.overrideName(), startAt: 0, loop: true };
+    if (sp && !this.missing)
+      return { kind: "declared", src: sp.src, name: "theme track", startAt: sp.startAt || 0, loop: sp.loop !== false };
+    if (this.localBlob && this.decodeOk !== false)
+      return { kind: "global", blob: this.localBlob, name: S.settings.musicFileName || "audio file", startAt: 0, loop: true };
+    return { kind: "none", startAt: 0, loop: true };
+  },
+  _resolveKey(){ const r = this._resolve(); return r.kind + "|" + (r.src || r.name || ""); },
+  async _loadOverride(){
+    const id = currentThemeId();
+    const name = this.overrideName();
+    if (!name){ this.ovBlob = null; this.ovId = id; this.ovDecodeOk = null; return; }
+    if (this.ovId === id && this.ovBlob) return;                 // already in memory
+    this.ovId = id; this.ovBlob = null; this.ovDecodeOk = null;
+    try {
+      const f = await DB.meta("musicOverride:" + id, null);
+      if (f && (f.size == null || f.size > 0)){ this.ovBlob = f; this.ovDecodeOk = await this._decodeCheck(f); }
+    } catch(_){}
+    this.render();
+  },
+  async probe(){                                          // cheap check so a missing declared src hides the orb up front
+    const sp = this.spec();
+    if (this.started) return;
+    if (!sp){ this.render(); return; }                    // no declared track for this theme
+    // if a good override or global file already covers us, the declared src doesn't matter
+    if ((this.ovBlob && this.ovDecodeOk !== false) || (this.hasLocal() && this.decodeOk !== false)){ this.missing = false; this.render(); return; }
     if (this.probed === sp.src) return;
     this.probed = sp.src;
     try {
@@ -4826,12 +4851,12 @@ const themeMusic = {
     this._revoke();
     this.started = false; this.seekPending = null;
   },
-  _srcNow(){                                              // SYNCHRONOUS: a good local blob wins, else the theme's declared src
-    if (this.localBlob && this.decodeOk !== false){
-      try { this._revoke(); this.objUrl = URL.createObjectURL(this.localBlob); return this.objUrl; } catch(_){}
+  _srcNow(){                                              // SYNCHRONOUS: resolve per precedence, no awaits (iOS gesture)
+    const r = this._resolve();
+    if (r.blob){
+      try { this._revoke(); this.objUrl = URL.createObjectURL(r.blob); return this.objUrl; } catch(_){}
     }
-    const sp = this.spec();
-    return sp ? sp.src : null;
+    return r.src || null;
   },
   /* silent metadata probe: does the browser's audio engine accept this file's container/codec? no sound, no gesture */
   _decodeCheck(blob){
@@ -4892,7 +4917,43 @@ const themeMusic = {
     this.missing = false; this.probed = "";
     this.render();
     await this.probe();                                   // fall back to the declared src (may 404 -> hidden)
-    toast("Music file removed");
+    toast("Shared music file removed");
+  },
+  /* assign a specific local file to the ACTIVE theme — beats the shared file while that theme is on */
+  async setThemeOverride(file){
+    if (DB.fallback){ toast("This browser can't store a local music file (no IndexedDB)"); return false; }
+    if (!file){ toast("No file came back from the picker"); return false; }
+    if (file.size > MUSIC_FILE_MAX){ toast("Audio file too large (max 25 MB)"); return false; }
+    const id = currentThemeId();
+    try {
+      await DB.setMeta("musicOverride:" + id, file);
+      const map = { ...(S.settings.musicOverrides || {}), [id]: file.name || "audio file" };
+      await DB.setMeta("musicOverrides", map);
+      S.settings.musicOverrides = map;
+    } catch(_){ toast("Couldn't save that file to this device"); return false; }
+    this.ovId = id; this.ovBlob = file; this.ovDecodeOk = null;
+    const wasPlaying = this.playing();
+    this._resetPlayback(); this.render();
+    this.ovDecodeOk = await this._decodeCheck(file);
+    this.render();
+    if (this.ovDecodeOk === false) toast(`Saved, but your browser can't decode this ${musicExt(file)} file. Try MP3 or M4A/AAC.`);
+    else { toast(`Track set for the ${themeName(id)} theme. Tap the orb to play.`); if (wasPlaying) this.toggle(); }
+    return this.ovDecodeOk !== false;
+  },
+  async removeThemeOverride(){
+    const id = currentThemeId();
+    try {
+      await DB.setMeta("musicOverride:" + id, null);
+      const map = { ...(S.settings.musicOverrides || {}) }; delete map[id];
+      await DB.setMeta("musicOverrides", map);
+      S.settings.musicOverrides = map;
+    } catch(_){}
+    this.ovBlob = null; this.ovId = id; this.ovDecodeOk = null;
+    this._resetPlayback();
+    this.missing = false; this.probed = "";
+    this.render();
+    await this.probe();
+    toast("Using the shared track for this theme");
   },
   _applyStart(){                                          // seek to startAt once the media can honour it
     if (this.seekPending == null || !this.el) return;
@@ -4906,7 +4967,8 @@ const themeMusic = {
   },
 
   /* ---- the floating orb --------------------------------------------------- */
-  startAt(){ const sp = this.spec(); return sp ? (sp.startAt || 0) : 0; },
+  startAt(){ return this._resolve().startAt || 0; },
+  curLoop(){ return this._resolve().loop !== false; },
   loopFrac(){                                             // position within the loop, 0..1
     if (!this.el) return 0;
     const s = this.startAt();
@@ -5023,21 +5085,21 @@ const themeMusic = {
       this.el.addEventListener("canplay", () => this._applyStart());
       // proactive seamless loop: jump back to startAt just before the true end
       this.el.addEventListener("timeupdate", () => {
-        const sp = this.spec();
-        if (!sp || sp.loop === false) return;
+        if (!this.curLoop()) return;
         const d = this.el.duration;
         if (d && isFinite(d) && this.el.currentTime >= d - 0.25){
-          try { this.el.currentTime = sp.startAt || 0; } catch(_){}
+          try { this.el.currentTime = this.startAt(); } catch(_){}
         }
       });
       this.el.addEventListener("ended", () => {           // fallback if timeupdate missed the end
-        const sp = this.spec();
-        if (!sp || sp.loop === false){ this.render(); return; }
-        try { this.el.currentTime = sp.startAt || 0; this.el.play().catch(()=>{}); } catch(_){}
+        if (!this.curLoop()){ this.render(); return; }
+        try { this.el.currentTime = this.startAt(); this.el.play().catch(()=>{}); } catch(_){}
       });
       this.el.addEventListener("error", () => {
         if (!this.el.getAttribute("src")) return;
-        if (this.hasLocal()){ this.decodeOk = false; this._resetPlayback(); toast("That audio file wouldn't play in this browser"); }
+        const r = this._resolve();
+        if (r.kind === "override"){ this.ovDecodeOk = false; this._resetPlayback(); toast("That track wouldn't play — try MP3 or M4A"); }
+        else if (r.kind === "global"){ this.decodeOk = false; this._resetPlayback(); toast("That audio file wouldn't play in this browser"); }
         else { this.missing = true; this.started = false; }
         this.render();
       });
@@ -5047,7 +5109,7 @@ const themeMusic = {
     this._bindOrb();
     this.render();
     this.probe();
-    // eagerly load the stored Blob so the FIRST tap-to-play has no await before .play() (iOS gesture rule)
+    // eagerly load the stored Blobs so the FIRST tap-to-play has no await before .play() (iOS gesture rule)
     if (this.hasLocal() && !this.localBlob){
       try {
         const f = await DB.meta("musicFile", null);
@@ -5058,15 +5120,12 @@ const themeMusic = {
         }
       } catch(_){}
     }
+    await this._loadOverride();
   },
   playing(){ return !!(this.el && this.started && !this.el.paused); },
-  playable(){
-    if (this.hasLocal() && this.decodeOk !== false) return true;   // a good local file
-    return !!this.spec() && !this.missing;                         // else the theme's declared src, if reachable
-  },
+  playable(){ return this._resolve().kind !== "none"; },
   toggle(){                                               // NOT async: nothing may await before .play() in the tap
-    const sp = this.spec();
-    if (!sp || !this.el || !this.playable()) return;
+    if (!this.el || !this.playable()) return;
     if (this.playing()){ this.el.pause(); this.render(); return; }
     if (!this.started){
       const url = this._srcNow();                         // synchronous — blob URL or declared src
@@ -5074,9 +5133,10 @@ const themeMusic = {
       this.el.src = url;
       this.started = true;
     }
+    this._playingKey = this._resolveKey();
     this._ensureGraph();                                  // build the analyser graph inside this gesture (iOS)
     if (this._ctx && this._ctx.state === "suspended") this._ctx.resume().catch(()=>{});
-    this.seekPending = sp.startAt || 0;
+    this.seekPending = this.startAt();
     this._applyStart();
     const t0 = this.el.currentTime || 0;
     const usedLocalBlob = !!this.objUrl && this.el.src === this.objUrl;
@@ -5107,11 +5167,16 @@ const themeMusic = {
     S.settings.musicVolume = v;
     DB.setMeta("musicVolume", v);
   },
-  onThemeChange(){
-    if (this.spec()) { this.render(); this.probe(); return; }
+  async onThemeChange(){
+    this.probed = ""; this.missing = false;
+    await this._loadOverride();                           // per-theme file for the NEW theme
+    if (this.playing() && this._resolveKey() === this._playingKey){
+      this.render();                                      // same source across the switch — keep playing
+      return;
+    }
     this._resetPlayback();
-    this.missing = false; this.probed = "";
     this.render();
+    this.probe();
   },
   render(){                                               // reflect state onto the orb + any settings controls
     const show = this.playable();
@@ -5125,37 +5190,62 @@ const themeMusic = {
       if (!orb.hasAttribute("tabindex")) orb.setAttribute("tabindex", "0");
       if (!playing) this._paintStatic();
     }
-    const sBtn = document.getElementById("setMusicToggle");
-    if (sBtn) sBtn.textContent = playing ? "Pause" : "Play";
-    const playRow = document.getElementById("monarchMusicPlay");
-    if (playRow) playRow.hidden = !show;
     const mp = document.getElementById("mpToggle");
-    if (mp) mp.textContent = playing ? "Pause" : "Play";
+    if (mp){ mp.textContent = playing ? "Pause" : "Play"; mp.disabled = !show; }
+    const sp = document.getElementById("btnMusicPanel");
+    if (sp) sp.textContent = playing ? "Pause" : (show ? "Play" : "Set up");
   },
 };
-/* long-press on the orb: a small sheet with volume, file, and the track name */
-function openMusicPanel(){
+/* long-press on the orb: a small sheet with volume, the current source, and file controls */
+function openMusicPanel(){ openSheet(musicPanelHTML()); wireMusicPanel(); }
+function musicSourceLine(){
+  const r = themeMusic._resolve();
+  const tn = themeName(currentThemeId());
+  if (r.kind === "override") return `<b>${esc(r.name)}</b> · assigned to ${esc(tn)}`;
+  if (r.kind === "declared")  return `${esc(tn)}'s built-in track`;
+  if (r.kind === "global")    return `<b>${esc(r.name)}</b> · shared across every theme`;
+  return "no track available for this theme";
+}
+function musicPanelHTML(){
   const s = S.settings;
-  const name = s.musicFileName ? esc(s.musicFileName) : ((THEME_REG[currentThemeId()]||{}).music ? "theme track" : "");
-  openSheet(`
+  const hasOv = !!themeMusic.overrideName();
+  const tn = themeName(currentThemeId());
+  return `
     <h2>Music</h2>
     <div class="row between" style="margin-bottom:12px">
-      <div class="tiny faint">${name ? `Now: <b>${name}</b>${s.musicFileSize?` · ${fmtBytes(s.musicFileSize)}`:""}` : "No track available"}</div>
-      <button class="btn sm" id="mpToggle">${themeMusic.playing() ? "Pause" : "Play"}</button>
+      <div class="tiny faint">Now: ${musicSourceLine()}</div>
+      <button class="btn sm" id="mpToggle" ${themeMusic.playable()?"":"disabled"}>${themeMusic.playing() ? "Pause" : "Play"}</button>
     </div>
     <label class="tiny faint" for="mpVol">Volume</label>
     <input type="range" class="rng" id="mpVol" min="0" max="1" step="0.01" value="${s.musicVolume ?? 0.5}" style="width:100%"/>
-    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:14px">
-      <label class="btn sm filepick" for="musicFilePick" role="button" tabindex="0">Choose music file</label>
-      ${s.musicFileName ? `<button class="btn sm ghost danger" id="mpRemove">Remove file</button>` : ""}
+
+    <div class="tiny faint" style="margin:14px 0 4px;letter-spacing:.08em;text-transform:uppercase">Shared track</div>
+    <div class="tiny faint" style="margin-bottom:6px">${s.musicFileName ? `<b>${esc(s.musicFileName)}</b>${s.musicFileSize?` · ${fmtBytes(s.musicFileSize)}`:""}` : "None — plays under any theme that has no track of its own."}</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <label class="btn sm filepick" for="musicFilePick" data-scope="global" role="button" tabindex="0">Choose shared file</label>
+      ${s.musicFileName ? `<button class="btn sm ghost danger" id="mpRemove">Remove</button>` : ""}
     </div>
-    ${themeMusic.localBroken ? `<div class="tiny" style="color:var(--neg);margin-top:6px">This file won't decode in your browser — try MP3 or M4A.</div>` : ""}
-    <div class="tiny faint" style="margin-top:8px">Tap the orb to play/pause. The file is stored only on this device.</div>
-  `);
-  SHEET.querySelector("#mpToggle").addEventListener("click", () => { themeMusic.toggle(); const b = SHEET.querySelector("#mpToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; });
-  SHEET.querySelector("#mpVol").addEventListener("input", (e) => themeMusic.setVolume(e.target.value));
+
+    <div class="tiny faint" style="margin:14px 0 4px;letter-spacing:.08em;text-transform:uppercase">${esc(tn)} only</div>
+    <div class="tiny faint" style="margin-bottom:6px">${hasOv ? `<b>${esc(themeMusic.overrideName())}</b> — used only while ${esc(tn)} is active.` : `Assign a different track just for ${esc(tn)}.`}</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <label class="btn sm filepick" for="musicFilePick" data-scope="theme" role="button" tabindex="0">${hasOv ? "Change" : "Choose"} ${esc(tn)}'s file</label>
+      ${hasOv ? `<button class="btn sm ghost danger" id="mpRemoveOv">Reset to shared</button>` : ""}
+    </div>
+
+    ${themeMusic.localBroken || themeMusic.ovDecodeOk === false ? `<div class="tiny" style="color:var(--neg);margin-top:8px">A chosen file won't decode in your browser — try MP3 or M4A/AAC.</div>` : ""}
+    <div class="tiny faint" style="margin-top:10px">Tap the orb to play/pause, long-press to reopen this. Files are stored only on this device.</div>
+  `;
+}
+function wireMusicPanel(){
+  const t = SHEET.querySelector("#mpToggle");
+  if (t) t.addEventListener("click", () => { themeMusic.toggle(); if (t) t.textContent = themeMusic.playing() ? "Pause" : "Play"; });
+  const v = SHEET.querySelector("#mpVol");
+  if (v) v.addEventListener("input", (e) => themeMusic.setVolume(e.target.value));
   const rm = SHEET.querySelector("#mpRemove");
-  if (rm) rm.addEventListener("click", async () => { await themeMusic.removeLocalFile(); await refresh(); closeSheet(); });
+  if (rm) rm.addEventListener("click", async () => { await themeMusic.removeLocalFile(); await refresh(); openMusicPanel(); });
+  const rmo = SHEET.querySelector("#mpRemoveOv");
+  if (rmo) rmo.addEventListener("click", async () => { await themeMusic.removeThemeOverride(); await refresh(); openMusicPanel(); });
 }
 function musicExt(file){
   const n = (file && file.name || "").toLowerCase();

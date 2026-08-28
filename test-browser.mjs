@@ -272,141 +272,107 @@ const failedRequests = [];
     await page.screenshot({ path: path.join(__dir, `screenshot-theme-${id}.png`) });
   }
 
-  // ---- Monarch: user-picked music file, stored as a Blob in IndexedDB ----
+  // ---- music: device-local files, per-theme overrides, precedence ----
   {
-    await page.evaluate(async () => { await pickThemeManually("monarch"); });
-    await new Promise((r) => setTimeout(r, 400));
-    await page.evaluate(() => openOverlay("settings"));
-    await new Promise((r) => setTimeout(r, 200));
-    const ui = await page.evaluate(() => {
-      const lbl = document.querySelector('label.filepick[for="musicFilePick"]');
-      const inp = document.getElementById("musicFilePick");
-      const cs = inp ? getComputedStyle(inp) : null;
-      return {
-        isLabel: !!lbl && lbl.tagName === "LABEL",
-        inputPresent: !!inp,
-        inputNotDisplayNone: cs ? cs.display !== "none" : false,
-        inputVisuallyHidden: cs ? (cs.position === "absolute" && parseFloat(cs.opacity) === 0) : false,
-        acceptBroad: inp ? (/audio\/\*/.test(inp.accept) && /\.mp3/.test(inp.accept) && /\.m4a/.test(inp.accept) && /\.wav/.test(inp.accept)) : false,
-        labelFocusable: lbl ? lbl.getAttribute("tabindex") === "0" : false,
-        labelTarget: lbl ? Math.round(lbl.getBoundingClientRect().height) : 0,
-        warns: /only in this browser/i.test(document.getElementById("full").textContent),
-        diag: /Theme music:/i.test(document.getElementById("full").textContent),
-        removeBtn: !!document.getElementById("btnRemoveMusic"),
-      };
+    // the single file input at app root — visually hidden, never display:none (iOS-safe)
+    const inp0 = await page.evaluate(() => {
+      const inp = document.getElementById("musicFilePick"); const cs = inp ? getComputedStyle(inp) : null;
+      return { atRoot: inp && inp.parentElement === document.body, notNone: cs && cs.display !== "none",
+        vh: cs && cs.position === "absolute" && parseFloat(cs.opacity) === 0,
+        accept: inp ? (/audio\/\*/.test(inp.accept) && /\.mp3/.test(inp.accept) && /\.m4a/.test(inp.accept)) : false };
     });
-    ok("music: 'Choose music file' is a real <label for> (iOS-safe)", ui.isLabel && ui.inputPresent, JSON.stringify(ui));
-    ok("music: file input is NOT display:none", ui.inputNotDisplayNone, JSON.stringify(ui));
-    ok("music: file input is visually hidden via CSS, kept in layout", ui.inputVisuallyHidden, JSON.stringify(ui));
-    ok("music: accept covers audio/* + .mp3/.m4a/.wav", ui.acceptBroad, JSON.stringify(ui));
-    ok("music: label is keyboard-focusable with a >=44px target", ui.labelFocusable && ui.labelTarget >= 44, JSON.stringify(ui));
-    ok("music: Settings warns the file is browser-only", ui.warns, JSON.stringify(ui));
-    ok("music: Troubleshooting shows a music diagnostic", ui.diag, JSON.stringify(ui));
-    ok("music: no 'Remove' button before a file is chosen", !ui.removeBtn, JSON.stringify(ui));
+    ok("music: one <input type=file> at app root, visually hidden, iOS-safe", inp0.atRoot && inp0.notNone && inp0.vh && inp0.accept, JSON.stringify(inp0));
 
-    // a file with an EMPTY type (as AirDrop/email MP3s often are) must still be accepted
-    const emptyType = await page.evaluate(async () => {
-      const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
-      const file = new File([buf], "airdropped.mp3", { type: "" });   // no MIME
-      const res = await themeMusic.setLocalFile(file);
-      return { res, name: await DB.meta("musicFileName", null), decodeOk: themeMusic.decodeOk, hasLocal: themeMusic.hasLocal() };
-    });
-    ok("music: a file with empty MIME type is accepted (validated by decode, not MIME)", emptyType.res !== false && emptyType.name === "airdropped.mp3" && emptyType.hasLocal, JSON.stringify(emptyType));
-    ok("music: decode check reports the file as playable", emptyType.decodeOk === true, JSON.stringify(emptyType));
-
-    // a non-audio blob must FAIL the decode check, be reported, and never be handed to the player
+    // an undecodable file fails the check, is reported, and is never handed to the player
+    await page.evaluate(async () => { await pickThemeManually("midnight"); });   // no declared music
     const bogus = await page.evaluate(async () => {
       const file = new File([new Uint8Array(4096).fill(65)], "not-audio.mp3", { type: "audio/mpeg" });
       const res = await themeMusic.setLocalFile(file);
-      const src = themeMusic._srcNow();
-      openOverlay("settings");
-      await new Promise((r) => setTimeout(r, 150));
-      return {
-        res, decodeOk: themeMusic.decodeOk, broken: themeMusic.localBroken,
-        srcSkipsBlob: !/^blob:/.test(src || ""),
-        uiWarns: /won't decode|can'?t decode|cannot decode/i.test(document.getElementById("full").textContent),
-        diag: (document.getElementById("full").textContent.match(/Theme music:[^\n]*/) || [""])[0],
-      };
+      return { res, decodeOk: themeMusic.decodeOk, broken: themeMusic.localBroken, srcSkipsBlob: !/^blob:/.test(themeMusic._srcNow() || "") };
     });
     ok("music: an undecodable file is reported, not silently accepted", bogus.res === false && bogus.decodeOk === false && bogus.broken, JSON.stringify(bogus));
     ok("music: the broken blob is never handed to the audio element", bogus.srcSkipsBlob, JSON.stringify(bogus));
-    ok("music: Settings names the decode failure + diagnostic shows CANNOT decode", bogus.uiWarns && /CANNOT decode/i.test(bogus.diag), JSON.stringify(bogus));
-    await page.evaluate(() => { try { closeFull(); } catch (_) {} });
 
-    // restore a good file for the rest of the flow
+    // a good SHARED file: stored in IndexedDB, plays on a theme that declares NO music (global reach)
     const stored = await page.evaluate(async () => {
       const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
-      const file = new File([buf], "my song.mp3", { type: "audio/mpeg" });
-      const okSet = await themeMusic.setLocalFile(file);
+      const okSet = await themeMusic.setLocalFile(new File([buf], "shared song.mp3", { type: "audio/mpeg" }));
       const blob = await DB.meta("musicFile", null);
-      return {
-        okSet,
-        name: await DB.meta("musicFileName", null),
-        size: await DB.meta("musicFileSize", 0),
-        hasLocal: themeMusic.hasLocal(),
-        blobIsBlob: blob instanceof Blob && blob.size > 1000,
-      };
+      return { okSet, name: await DB.meta("musicFileName", null), size: await DB.meta("musicFileSize", 0),
+        hasLocal: themeMusic.hasLocal(), blobIsBlob: blob instanceof Blob && blob.size > 1000,
+        notAsync: themeMusic.toggle.constructor.name !== "AsyncFunction", blobInMemory: !!themeMusic.localBlob };
     });
-    ok("music: setLocalFile stores the Blob + name + size in IndexedDB", stored.okSet && stored.blobIsBlob && stored.name === "my song.mp3" && stored.size > 1000, JSON.stringify(stored));
-    ok("music: hasLocal() true once a file is stored", stored.hasLocal, JSON.stringify(stored));
+    ok("music: shared file stored (Blob + name + size) in IndexedDB", stored.okSet && stored.blobIsBlob && stored.name === "shared song.mp3" && stored.size > 1000, JSON.stringify(stored));
+    ok("music: toggle() is synchronous up to play() and holds the Blob in memory", stored.notAsync && stored.blobInMemory, JSON.stringify(stored));
 
-    // the tap path must be synchronous up to .play() — toggle() is not async and holds the Blob in memory
-    const syncPath = await page.evaluate(() => ({
-      notAsync: themeMusic.toggle.constructor.name !== "AsyncFunction",
-      blobInMemory: !!themeMusic.localBlob,
-    }));
-    ok("music: toggle() is synchronous up to play() (no await eats the iOS gesture)", syncPath.notAsync && syncPath.blobInMemory, JSON.stringify(syncPath));
-
-    // it plays from a blob: URL and honours the theme's startAt (33s)
-    const played = await page.evaluate(async () => {
+    const gm = await page.evaluate(async () => {
+      const o = document.getElementById("musicOrb");
+      const before = !o.hidden;
       await themeMusic.toggle();
-      await new Promise((r) => setTimeout(r, 1800));
+      await new Promise((r) => setTimeout(r, 1500));
       const a = document.getElementById("themeAudio");
-      return { src: a.getAttribute("src"), isBlob: /^blob:/.test(a.src), paused: a.paused, t: +a.currentTime.toFixed(1) };
+      return { orbOnNonDeclaringTheme: before, isBlob: /^blob:/.test(a.src), paused: a.paused, kind: themeMusic._resolve().kind };
     });
-    ok("music: local file plays via a blob: URL", played.isBlob && !played.paused, JSON.stringify(played));
-    ok("music: playback honours theme startAt (~33s)", played.t >= 30 && played.t < 60, JSON.stringify(played));
+    ok("music: shared file makes the orb appear on a NON-Monarch theme", gm.orbOnNonDeclaringTheme, JSON.stringify(gm));
+    ok("music: shared file plays via a blob: URL, resolved as 'global'", gm.isBlob && !gm.paused && gm.kind === "global", JSON.stringify(gm));
 
-    // settings now shows the file name + a Remove button
-    await page.evaluate(() => openOverlay("settings"));
+    // switching to a theme that DECLARES music + whose src resolves -> declared wins over the shared file
+    const prec = await page.evaluate(async () => {
+      await pickThemeManually("monarch");
+      await new Promise((r) => setTimeout(r, 400));
+      return { kind: themeMusic._resolve().kind, playing: themeMusic.playing(), startAt: themeMusic.startAt() };
+    });
+    ok("music: a theme's declared track beats the shared file when its src resolves", prec.kind === "declared" && prec.startAt === 33, JSON.stringify(prec));
+
+    // a PER-THEME override beats even the declared track
+    const ov = await page.evaluate(async () => {
+      const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
+      const res = await themeMusic.setThemeOverride(new File([buf], "monarch only.mp3", { type: "audio/mpeg" }));
+      return { res, kind: themeMusic._resolve().kind, name: (await DB.meta("musicOverrides", {})).monarch, startAt: themeMusic.startAt() };
+    });
+    ok("music: a per-theme override beats the declared track", ov.res !== false && ov.kind === "override" && ov.name === "monarch only.mp3" && ov.startAt === 0, JSON.stringify(ov));
+
+    // long-press panel shows the source line + both scoped pickers + a reset
+    await page.evaluate(() => openMusicPanel());
     await new Promise((r) => setTimeout(r, 200));
-    const withFile = await page.evaluate(() => ({
-      text: document.getElementById("full").textContent,
-      removeBtn: !!document.getElementById("btnRemoveMusic"),
-    }));
-    ok("music: Settings shows the chosen file name", /my song\.mp3/.test(withFile.text), withFile.text.slice(0, 200));
-    ok("music: Settings offers 'Remove music file'", withFile.removeBtn);
+    const panel = await page.evaluate(() => {
+      const t = document.getElementById("sheet").textContent;
+      return { open: document.querySelector("#sheet.open") != null, hasVol: !!document.getElementById("mpVol"),
+        sourceLine: /monarch only\.mp3/.test(t),
+        gl: !!document.querySelector('label.filepick[data-scope="global"]'),
+        th: !!document.querySelector('label.filepick[data-scope="theme"]'),
+        resetOv: !!document.getElementById("mpRemoveOv") };
+    });
+    ok("music: panel shows source line, volume, both pickers, and a per-theme reset", panel.open && panel.hasVol && panel.sourceLine && panel.gl && panel.th && panel.resetOv, JSON.stringify(panel));
+    await page.evaluate(() => closeSheet());
 
-    // survives a full reload (persisted in IndexedDB), and the Blob is re-loaded into memory + re-decode-checked
+    // reset the override -> back to the declared track
+    const reset = await page.evaluate(async () => {
+      await themeMusic.removeThemeOverride();
+      return { kind: themeMusic._resolve().kind, mapEmpty: Object.keys(await DB.meta("musicOverrides", {})).length === 0 };
+    });
+    ok("music: removing the override returns to the declared track", reset.kind === "declared" && reset.mapEmpty, JSON.stringify(reset));
+
+    // survives a full reload
     await page.reload({ waitUntil: "networkidle0" });
     await new Promise((r) => setTimeout(r, 900));
-    await page.evaluate(async () => { await pickThemeManually("monarch"); });
-    await page.waitForFunction(() => themeMusic.decodeOk !== null && !!themeMusic.localBlob, { timeout: 8000 }).catch(() => {});
+    await page.evaluate(async () => { await pickThemeManually("midnight"); });
+    await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "midnight" && themeMusic.decodeOk !== null && !!themeMusic.localBlob, { timeout: 8000 }).catch(() => {});
     const afterReload = await page.evaluate(() => ({
-      name: S.settings.musicFileName,
-      size: S.settings.musicFileSize,
-      hasLocal: themeMusic.hasLocal(),
-      blobInMemory: !!themeMusic.localBlob,
-      decodeOk: themeMusic.decodeOk,
+      name: S.settings.musicFileName, blobInMemory: !!themeMusic.localBlob, decodeOk: themeMusic.decodeOk,
       playable: themeMusic.playable(),
       orbVisible: (() => { const o = document.getElementById("musicOrb"); return !!o && !o.hidden; })(),
     }));
-    ok("music: picked file persists across a reload (name + size)", afterReload.name === "my song.mp3" && afterReload.size > 1000 && afterReload.hasLocal, JSON.stringify(afterReload));
-    ok("music: Blob re-loaded into memory + re-verified after reload", afterReload.blobInMemory && afterReload.decodeOk === true, JSON.stringify(afterReload));
-    ok("music: orb is available after reload", afterReload.playable && afterReload.orbVisible, JSON.stringify(afterReload));
+    ok("music: shared file + orb survive a reload on a non-declaring theme", afterReload.name === "shared song.mp3" && afterReload.blobInMemory && afterReload.decodeOk === true && afterReload.playable && afterReload.orbVisible, JSON.stringify(afterReload));
 
-    // Remove music file -> back to the declared-src fallback
+    // remove the shared file -> orb hides on a non-declaring theme
     const removed = await page.evaluate(async () => {
-      await themeMusic.removeLocalFile();
-      await refresh();
-      return {
-        name: await DB.meta("musicFileName", null),
-        blob: await DB.meta("musicFile", null),
-        hasLocal: themeMusic.hasLocal(),
-      };
+      await themeMusic.removeLocalFile(); await refresh();
+      return { name: await DB.meta("musicFileName", null), blob: await DB.meta("musicFile", null),
+        playable: themeMusic.playable(), orbHidden: (() => { const o = document.getElementById("musicOrb"); return !o || o.hidden; })() };
     });
-    ok("music: Remove clears the Blob + name from IndexedDB", removed.name === null && !removed.blob && !removed.hasLocal, JSON.stringify(removed));
-    await page.evaluate(() => { try { closeFull(); } catch (_) {} });
+    ok("music: removing the shared file clears IndexedDB and hides the orb (midnight has no track)", removed.name === null && !removed.blob && !removed.playable && removed.orbHidden, JSON.stringify(removed));
+    await page.evaluate(() => { try { closeSheet(); closeFull(); } catch (_) {} });
   }
 
   await page.evaluate(() => applyTheme("midnight"));
