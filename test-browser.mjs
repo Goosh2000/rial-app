@@ -70,7 +70,8 @@ const failedRequests = [];
   });
   page.on("pageerror", (err) => pageErrors.push(err.message + "\n" + (err.stack || "")));
   // theme web-fonts (Google Fonts) degrade to a fallback stack by design — not app failures
-  const ignoreReq = (u) => /favicon\.ico|fonts\.googleapis\.com|fonts\.gstatic\.com/.test(u);
+  // blob: URLs are in-memory; an aborted blob load (revoked object URL / audio src swap) is not a network failure
+  const ignoreReq = (u) => /favicon\.ico|fonts\.googleapis\.com|fonts\.gstatic\.com|^blob:/.test(u);
   page.on("requestfailed", (r) => { if (!ignoreReq(r.url())) failedRequests.push(`${r.url()} — ${r.failure()?.errorText}`); });
   page.on("response", (r) => { if (r.status() >= 400 && !ignoreReq(r.url())) failedRequests.push(`${r.url()} — HTTP ${r.status()}`); });
 
@@ -240,6 +241,90 @@ const failedRequests = [];
     }
     await page.screenshot({ path: path.join(__dir, `screenshot-theme-${id}.png`) });
   }
+
+  // ---- Monarch: user-picked music file, stored as a Blob in IndexedDB ----
+  {
+    await page.evaluate(async () => { await pickThemeManually("monarch"); });
+    await new Promise((r) => setTimeout(r, 400));
+    await page.evaluate(() => openOverlay("settings"));
+    await new Promise((r) => setTimeout(r, 200));
+    const ui = await page.evaluate(() => ({
+      pickBtn: !!document.getElementById("btnPickMusic"),
+      fileInput: !!document.getElementById("musicFilePick"),
+      warns: /only in this browser/i.test(document.getElementById("full").textContent),
+      removeBtn: !!document.getElementById("btnRemoveMusic"),
+    }));
+    ok("music: Settings offers 'Choose music file'", ui.pickBtn && ui.fileInput, JSON.stringify(ui));
+    ok("music: Settings warns the file is browser-only", ui.warns, JSON.stringify(ui));
+    ok("music: no 'Remove' button before a file is chosen", !ui.removeBtn, JSON.stringify(ui));
+
+    // pick a real audio file: wrap the locally-served track as a File and store it
+    const stored = await page.evaluate(async () => {
+      const buf = await fetch("assets/theme-music.mp3").then((r) => r.arrayBuffer());
+      const file = new File([buf], "my song.mp3", { type: "audio/mpeg" });
+      const okSet = await themeMusic.setLocalFile(file);
+      const blob = await DB.meta("musicFile", null);
+      return {
+        okSet,
+        name: await DB.meta("musicFileName", null),
+        hasLocal: themeMusic.hasLocal(),
+        blobIsBlob: blob instanceof Blob && blob.size > 1000,
+        settingsName: S.settings.musicFileName,
+      };
+    });
+    ok("music: setLocalFile stores the Blob + name in IndexedDB", stored.okSet && stored.blobIsBlob && stored.name === "my song.mp3", JSON.stringify(stored));
+    ok("music: hasLocal() true once a file is stored", stored.hasLocal, JSON.stringify(stored));
+
+    // it plays from a blob: URL and honours the theme's startAt (33s)
+    const played = await page.evaluate(async () => {
+      await themeMusic.toggle();
+      await new Promise((r) => setTimeout(r, 1800));
+      const a = document.getElementById("themeAudio");
+      return { src: a.getAttribute("src"), isBlob: /^blob:/.test(a.src), paused: a.paused, t: +a.currentTime.toFixed(1) };
+    });
+    ok("music: local file plays via a blob: URL", played.isBlob && !played.paused, JSON.stringify(played));
+    ok("music: playback honours theme startAt (~33s)", played.t >= 30 && played.t < 60, JSON.stringify(played));
+
+    // settings now shows the file name + a Remove button
+    await page.evaluate(() => openOverlay("settings"));
+    await new Promise((r) => setTimeout(r, 200));
+    const withFile = await page.evaluate(() => ({
+      text: document.getElementById("full").textContent,
+      removeBtn: !!document.getElementById("btnRemoveMusic"),
+    }));
+    ok("music: Settings shows the chosen file name", /my song\.mp3/.test(withFile.text), withFile.text.slice(0, 200));
+    ok("music: Settings offers 'Remove music file'", withFile.removeBtn);
+
+    // survives a full reload (persisted in IndexedDB)
+    await page.reload({ waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 700));
+    const afterReload = await page.evaluate(async () => {
+      await pickThemeManually("monarch");
+      await new Promise((r) => setTimeout(r, 300));
+      return {
+        name: S.settings.musicFileName,
+        hasLocal: themeMusic.hasLocal(),
+        playable: themeMusic.playable(),
+        btnVisible: (() => { const b = document.getElementById("musicToggle"); return !!b && !b.hidden; })(),
+      };
+    });
+    ok("music: picked file persists across a reload", afterReload.name === "my song.mp3" && afterReload.hasLocal, JSON.stringify(afterReload));
+    ok("music: control is available after reload", afterReload.playable && afterReload.btnVisible, JSON.stringify(afterReload));
+
+    // Remove music file -> back to the declared-src fallback
+    const removed = await page.evaluate(async () => {
+      await themeMusic.removeLocalFile();
+      await refresh();
+      return {
+        name: await DB.meta("musicFileName", null),
+        blob: await DB.meta("musicFile", null),
+        hasLocal: themeMusic.hasLocal(),
+      };
+    });
+    ok("music: Remove clears the Blob + name from IndexedDB", removed.name === null && !removed.blob && !removed.hasLocal, JSON.stringify(removed));
+    await page.evaluate(() => { try { closeFull(); } catch (_) {} });
+  }
+
   await page.evaluate(() => applyTheme("midnight"));
 
   // ---- auto-scheduler: a scheduled switch actually applies (with crossfade) ----

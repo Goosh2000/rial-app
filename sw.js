@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "11";  // v11: ?sms= / ?view=add URL params for iOS Shortcuts (parse to review, never auto-save)
+const SW_VERSION = "12";  // v12: Monarch music — pick an audio file, stored as a Blob in IndexedDB (device-local)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

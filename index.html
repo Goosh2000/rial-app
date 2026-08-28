@@ -645,6 +645,7 @@ async function refresh(){
     allowanceStreak: await DB.meta("allowanceStreak", 0),
     game: await DB.meta("game", { xp: 0, quests: { ymd: "", done: [] } }),
     musicVolume: await DB.meta("musicVolume", 0.5),
+    musicFileName: await DB.meta("musicFileName", null),   // name only; the Blob lives under "musicFile"
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -3022,12 +3023,28 @@ function settingsHTML(){
   <div class="card">
     <h3 style="font-size:15px;margin-bottom:10px">${esc(themeName(active))}</h3>
     ${reg.module === "gamification" ? `<div class="tiny faint mono" style="margin-bottom:10px">LV ${lv.level} · ${(s.game||{}).xp||0} XP · 🔥 ${s.streak||0} day${(s.streak||0)===1?"":"s"}</div>` : ""}
-    ${reg.music ? `<div id="monarchMusicRow"${themeMusic.spec()&&!themeMusic.missing?"":" hidden"}>
-      <div class="row between" style="margin-bottom:8px"><span class="tiny">Theme music</span>
-        <button class="btn sm" id="setMusicToggle">${themeMusic.playing()?"Pause":"Play"}</button></div>
-      <label class="tiny faint" for="setMusicVol">Volume</label>
-      <input type="range" class="rng" id="setMusicVol" min="0" max="1" step="0.01" value="${s.musicVolume ?? 0.5}" style="width:100%"/>
-      <div class="tiny faint" style="margin-top:6px">Tap-to-play only. Starts partway in and loops seamlessly. Keeps playing as you move between tabs; stops when you leave the theme.</div>
+    ${reg.music ? `<div id="monarchMusicRow">
+      <div id="monarchMusicPlay"${themeMusic.playable()?"":" hidden"}>
+        <div class="row between" style="margin-bottom:8px"><span class="tiny">Theme music</span>
+          <button class="btn sm" id="setMusicToggle">${themeMusic.playing()?"Pause":"Play"}</button></div>
+        <label class="tiny faint" for="setMusicVol">Volume</label>
+        <input type="range" class="rng" id="setMusicVol" min="0" max="1" step="0.01" value="${s.musicVolume ?? 0.5}" style="width:100%"/>
+        <div class="tiny faint" style="margin-top:6px">Tap-to-play only. Starts at ${reg.music.startAt||0}s and loops seamlessly. Keeps playing as you move between tabs; stops when you leave the theme.</div>
+      </div>
+      <div style="margin-top:10px">
+        <input type="file" id="musicFilePick" accept="audio/*" hidden />
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn sm" id="btnPickMusic">Choose music file</button>
+          ${s.musicFileName ? `<button class="btn sm ghost danger" id="btnRemoveMusic">Remove music file</button>` : ""}
+        </div>
+        <div class="tiny faint" style="margin-top:6px">
+          ${s.musicFileName
+            ? `Playing <b>${esc(s.musicFileName)}</b> from this device.`
+            : `No file chosen${themeMusic.playable() ? " — using the theme's built-in track" : ""}.`}
+          <br>Audio you choose is stored <b>only in this browser</b> — clearing site data or moving to another device loses it.
+        </div>
+        ${DB.fallback ? `<div class="tiny" style="color:var(--warn);margin-top:4px">This browser has no IndexedDB, so a local music file can't be stored here.</div>` : ""}
+      </div>
     </div>` : ""}
   </div>`;
   })()}
@@ -3129,6 +3146,8 @@ FULL.addEventListener("click", async (e) => {
   }
   if (e.target.id === "setSound"){ await DB.setMeta("soundOn", !S.settings.soundOn); await refresh(); openFull(settingsHTML()); }
   if (e.target.id === "setMusicToggle"){ await themeMusic.toggle(); const b = document.getElementById("setMusicToggle"); if (b) b.textContent = themeMusic.playing() ? "Pause" : "Play"; }
+  if (e.target.id === "btnPickMusic"){ const inp = document.getElementById("musicFilePick"); if (inp) inp.click(); return; }
+  if (e.target.id === "btnRemoveMusic"){ await themeMusic.removeLocalFile(); await refresh(); openFull(settingsHTML()); return; }
   if (e.target.id === "btnExport"){ await doExport(); openFull(settingsHTML()); }
   if (e.target.id === "btnImport"){ document.getElementById("fileImport").click(); }
   if (e.target.id === "btnReset"){ await resetApp(); }
@@ -3137,6 +3156,12 @@ FULL.addEventListener("input", (e) => {
   if (e.target.id === "setMusicVol") themeMusic.setVolume(e.target.value);
 });
 FULL.addEventListener("change", async (e) => {
+  if (e.target.id === "musicFilePick"){
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (f){ await themeMusic.setLocalFile(f); await refresh(); openFull(settingsHTML()); }
+    return;
+  }
   if (e.target.id === "fileImport" && e.target.files[0]){
     try {
       const txt = await e.target.files[0].text();
@@ -4400,21 +4425,82 @@ function prefersReducedMotion(){
   catch(_) { return false; }
 }
 
-/* ---- theme music: tap-to-play, seamless loop back to startAt, hides if missing ---- */
+/* ---- theme music ---------------------------------------------------------
+ * A theme can declare music: { src, startAt, loop }. But the built-in `src`
+ * often isn't shipped (Monarch's track is copyrighted, so it's gitignored and
+ * 404s in production). So the real source of truth is a file the user picks in
+ * Settings, stored as a Blob in IndexedDB and played via URL.createObjectURL.
+ * Resolution order: local file  ->  theme's declared src  ->  hide the control.
+ * startAt / loop always come from the theme. Tap-to-play only, never autoplay.
+ * ----------------------------------------------------------------------- */
+const MUSIC_FILE_MAX = 25 * 1024 * 1024;   // 25 MB — one song, safe for mobile IndexedDB
+
 const themeMusic = {
-  el: null, wired: false, missing: false, started: false, seekPending: null, probed: "",
+  el: null, wired: false, missing: false, started: false, seekPending: null, probed: "", objUrl: null,
   spec(){ return (THEME_REG[currentThemeId()] || {}).music || null; },
-  async probe(){                                          // one cheap check so a missing file hides the control up front
+  hasLocal(){ return !!(S.settings && S.settings.musicFileName) && !DB.fallback; },
+  async probe(){                                          // cheap check so a missing declared src hides the control up front
     const sp = this.spec();
-    if (!sp || this.started || this.probed === sp.src) return;
+    if (!sp || this.started) return;
+    if (this.hasLocal()){ this.missing = false; this.render(); return; }
+    if (this.probed === sp.src) return;
     this.probed = sp.src;
     try {
       const res = await fetch(sp.src, { method: "GET", headers: { Range: "bytes=0-0" }, cache: "no-store" });
       if (!res.ok && res.status !== 206) throw 0;
+      this.missing = false;
     } catch(_) {
       this.missing = true;
     }
     this.render();
+  },
+  _revoke(){ if (this.objUrl){ try { URL.revokeObjectURL(this.objUrl); } catch(_){} this.objUrl = null; } },
+  _resetPlayback(){
+    try { this.el && this.el.pause(); } catch(_){}
+    try { if (this.el){ this.el.removeAttribute("src"); this.el.load(); } } catch(_){}
+    this._revoke();
+    this.started = false; this.seekPending = null;
+  },
+  async _resolveSrc(){                                    // local file wins; else the theme's declared src
+    if (this.hasLocal()){
+      try {
+        const f = await DB.meta("musicFile", null);
+        if (f && (f.size == null || f.size > 0)){
+          this._revoke();
+          this.objUrl = URL.createObjectURL(f);
+          return this.objUrl;
+        }
+      } catch(_){}
+    }
+    const sp = this.spec();
+    return sp ? sp.src : null;
+  },
+  async setLocalFile(file){
+    if (DB.fallback){ toast("This browser can't store a local music file"); return false; }
+    if (!file) return false;
+    if (file.type && !/^audio\//i.test(file.type)){ toast("Pick an audio file"); return false; }
+    if (file.size > MUSIC_FILE_MAX){ toast("Audio file too large (max 25 MB)"); return false; }
+    try {
+      await DB.setMeta("musicFile", file);
+      await DB.setMeta("musicFileName", file.name || "audio file");
+    } catch(e){ toast("Couldn't save that file"); return false; }
+    S.settings.musicFileName = file.name || "audio file";
+    this.missing = false; this.probed = "";
+    const wasPlaying = this.playing();
+    this._resetPlayback();
+    this.render();
+    toast("Music file saved — stays on this device only");
+    if (wasPlaying) this.toggle();
+    return true;
+  },
+  async removeLocalFile(){
+    try { await DB.setMeta("musicFile", null); await DB.setMeta("musicFileName", null); } catch(_){}
+    S.settings.musicFileName = null;
+    this._resetPlayback();
+    this.missing = false; this.probed = "";
+    this.render();
+    this.probe();                                         // fall back to the declared src (may 404 -> hidden)
+    toast("Music file removed");
   },
   _applyStart(){                                          // seek to startAt once the media can honour it
     if (this.seekPending == null || !this.el) return;
@@ -4449,20 +4535,25 @@ const themeMusic = {
         try { this.el.currentTime = sp.startAt || 0; this.el.play().catch(()=>{}); } catch(_){}
       });
       this.el.addEventListener("error", () => {
-        if (this.el.getAttribute("src")){ this.missing = true; this.started = false; this.render(); }
+        if (!this.el.getAttribute("src")) return;
+        if (this.hasLocal()){ this._resetPlayback(); toast("That audio file wouldn't play"); }
+        else { this.missing = true; this.started = false; }
+        this.render();
       });
     }
     this.render();
     this.probe();
   },
   playing(){ return !!(this.el && this.started && !this.el.paused); },
+  playable(){ return this.hasLocal() || (!!this.spec() && !this.missing); },
   async toggle(){
     const sp = this.spec();
-    if (!sp || !this.el || this.missing) return;
+    if (!sp || !this.el || !this.playable()) return;
     if (this.playing()){ this.el.pause(); this.render(); return; }
     if (!this.started){
-      // first tap = the first (and only) time we touch the network for the file
-      this.el.src = sp.src;
+      const url = await this._resolveSrc();               // local blob URL, or the theme's declared src
+      if (!url){ this.render(); return; }
+      this.el.src = url;
       this.started = true;
     }
     this.seekPending = sp.startAt || 0;
@@ -4471,9 +4562,9 @@ const themeMusic = {
       await this.el.play();
       this._applyStart();
     } catch(err){
-      this.missing = true;                                // 404 / decode / autoplay-blocked
-      try { this.el.removeAttribute("src"); this.el.load(); } catch(_){}
-      this.started = false;
+      if (!this.hasLocal()) this.missing = true;          // declared src 404 / decode / autoplay-blocked
+      else toast("Couldn't play that audio file");
+      this._resetPlayback();
     }
     this.render();
   },
@@ -4485,12 +4576,12 @@ const themeMusic = {
   },
   onThemeChange(){
     if (this.spec()) { this.render(); this.probe(); return; }
-    if (this.el){ try { this.el.pause(); this.el.removeAttribute("src"); this.el.load(); } catch(_){} }
-    this.started = false; this.missing = false; this.seekPending = null; this.probed = "";
+    this._resetPlayback();
+    this.missing = false; this.probed = "";
     this.render();
   },
   render(){                                               // reflect state onto any live controls
-    const show = !!this.spec() && !this.missing;
+    const show = this.playable();
     const btn = document.getElementById("musicToggle");
     if (btn){
       btn.hidden = !show;
@@ -4500,8 +4591,8 @@ const themeMusic = {
     }
     const sBtn = document.getElementById("setMusicToggle");
     if (sBtn) sBtn.textContent = this.playing() ? "Pause" : "Play";
-    const sRow = document.getElementById("monarchMusicRow");
-    if (sRow) sRow.hidden = !show;
+    const playRow = document.getElementById("monarchMusicPlay");
+    if (playRow) playRow.hidden = !show;
   },
 };
 

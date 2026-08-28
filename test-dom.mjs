@@ -463,19 +463,38 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
     ok("themeAudio lives outside #view (survives tab nav)", audio && !$("#view").contains(audio));
     ok("themeAudio has no src before a tap (no network hit)", audio && !audio.getAttribute("src"));
   }
-  // volume slider in Settings
+  // volume slider + "Choose music file" in Settings
   win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings open");
   ok("Settings: Monarch music volume slider present", !!$("#setMusicVol"));
+  ok("Settings: 'Choose music file' picker present", !!$("#btnPickMusic") && !!$("#musicFilePick"));
+  ok("Settings: warns the file lives only in this browser", /only in this browser/i.test($("#full").textContent));
+  ok("Settings: no 'Remove music file' until one is chosen", !$("#btnRemoveMusic"));
   setVal($("#setMusicVol"), "0.8");
   await sleep(30);
   ok("music volume persists to meta", parseFloat(win.localStorage.getItem("rial:meta:musicVolume")) === 0.8);
   win.eval("closeFull()"); await sleep(200);
 
-  // tap-to-play wires up the source (jsdom media is stubbed)
+  // tap-to-play falls back to the theme's declared src when no local file is stored
   win.eval('go("home")'); await sleep(50);
   click($("#musicToggle"));
   await sleep(50);
-  ok("tapping the toggle assigns the audio source", $("#themeAudio").getAttribute("src") === "assets/theme-music.mp3");
+  ok("tap-to-play uses the theme's declared src as fallback", $("#themeAudio").getAttribute("src") === "assets/theme-music.mp3");
+
+  // when the declared src 404s AND there's no local file, the control hides itself
+  {
+    const realFetch = win.fetch;
+    win.fetch = async () => ({ ok: false, status: 404 });
+    await win.eval("(async () => { themeMusic.probed=''; themeMusic.missing=false; themeMusic._resetPlayback(); await themeMusic.probe(); })()");
+    await sleep(60);
+    win.eval('go("home")'); await sleep(40);
+    ok("declared src 404 + no local file -> header control hidden", !$("#musicToggle") || $("#musicToggle").hidden);
+    win.eval('openOverlay("settings")'); await until(() => $("#full.open"), "settings");
+    ok("declared src 404 -> play row hidden but the file picker still shows", $("#monarchMusicPlay") && $("#monarchMusicPlay").hidden && !!$("#btnPickMusic"));
+    win.eval("closeFull()"); await sleep(150);
+    win.fetch = realFetch;
+    await win.eval("(async () => { themeMusic.probed=''; themeMusic.missing=false; await themeMusic.probe(); })()");
+    await sleep(60);
+  }
 
   // funding a goal triggers the full-screen QUEST COMPLETE
   win.eval(`(async () => {
