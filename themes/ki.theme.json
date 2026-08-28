@@ -1,0 +1,25 @@
+{
+  "id": "ki",
+  "name": "Ki",
+  "scheme": "dark",
+  "tokens": {
+    "bg": "#0B0705",
+    "bg-elev": "#17100A",
+    "bg-elev-2": "#221709",
+    "line": "#3A2A14",
+    "text": "#FFF3E0",
+    "text-dim": "#D0AC7C",
+    "text-faint": "#93744C",
+    "accent": "#FF9A2E",
+    "accent-ink": "#1A0E02",
+    "pos": "#7CD44F",
+    "neg": "#FF4D4D",
+    "warn": "#FFD34E",
+    "shadow": "0 6px 28px rgba(255,120,20,.14), 0 12px 40px rgba(0,0,0,.55)",
+    "r-lg": "18px",
+    "r-md": "12px",
+    "r-sm": "8px"
+  },
+  "font": { "family": "Teko" },
+  "decorativeCss": "@keyframes ki-aura{0%,100%{opacity:.30}50%{opacity:.60}}[data-theme=\"ki\"] .card{background-image:radial-gradient(120% 90% at 50% 0%,rgba(255,154,46,.10),transparent 65%)}[data-theme=\"ki\"] .btn.primary,[data-theme=\"ki\"] #addBtn{box-shadow:0 0 18px rgba(255,154,46,.45),0 0 44px rgba(255,154,46,.18);animation:ki-aura 2.6s ease-in-out infinite}[data-theme=\"ki\"] h1{text-shadow:0 0 22px rgba(255,154,46,.35)}@media (prefers-reduced-motion:reduce){[data-theme=\"ki\"] .btn.primary,[data-theme=\"ki\"] #addBtn{animation:none}}"
+}

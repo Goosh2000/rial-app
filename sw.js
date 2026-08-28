@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "17";  // v17: fix no-overspend quest (keyed to today vs today's allowance); unavailable state when no plan
+const SW_VERSION = "18";  // v18: add the Ki theme (amber/ember, Teko display font)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [
