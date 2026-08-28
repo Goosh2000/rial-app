@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "16";  // v16: drawn inline-SVG icon set replaces system emoji app-wide (all themes)
+const SW_VERSION = "17";  // v17: fix no-overspend quest (keyed to today vs today's allowance); unavailable state when no plan
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

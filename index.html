@@ -153,6 +153,10 @@
 [data-theme="monarch"] .game-panel .quest.done{border-color:color-mix(in srgb,var(--pos) 55%,transparent);box-shadow:0 0 12px color-mix(in srgb,var(--pos) 25%,transparent)}
 [data-theme="monarch"] .game-panel .quest.done .q-box{color:var(--pos)}
 [data-theme="monarch"] .game-panel .quest.done .q-label{color:var(--text-dim);text-decoration:line-through}
+[data-theme="monarch"] .game-panel .quest.unavail{opacity:.6;border-style:dashed}
+[data-theme="monarch"] .game-panel .quest.unavail .q-box{color:var(--text-faint)}
+[data-theme="monarch"] .game-panel .quest.unavail .q-label{display:flex;flex-direction:column;gap:1px;text-align:left}
+[data-theme="monarch"] .game-panel .quest .q-hint{font-size:11px;color:var(--text-faint);letter-spacing:.02em}
 [data-theme="monarch"] #questComplete:not([hidden]){position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:24px;text-align:center;background:radial-gradient(120% 80% at 50% 40%,color-mix(in srgb,var(--accent) 14%,var(--bg)),var(--bg) 70%)}
 [data-theme="monarch"] #questComplete .qc-inner{animation:monarch-questpop .5s cubic-bezier(.2,.9,.3,1)}
 [data-theme="monarch"] #questComplete .qc-kicker{font-size:12px;letter-spacing:.3em;text-transform:uppercase;color:var(--accent);margin-bottom:14px}
@@ -900,6 +904,7 @@ const F = {
     const displayToday = Math.max(floor, today);    // never advise negative/zero as an allowance
     return {
       base, today: displayToday, rawToday: today, floor,
+      configured: income > 0,                        // no monthly income / plan / income tx -> allowance is meaningless
       spentToday, remainingToday: displayToday - spentToday,
       carryover, correction, spreadDays, daysLeft,
       impossible, message,
@@ -1001,9 +1006,13 @@ SCREENS.home = () => {
 
   <div class="card tight" data-open="allowanceInfo" style="cursor:pointer">
     <div class="row between"><h3 style="font-size:14px;color:var(--text-dim)">Today's allowance</h3>
-      <span class="mono" style="font-weight:750;color:${al.remainingToday<0?'var(--neg)':'var(--pos)'}">${U.fmt(al.remainingToday)} left</span></div>
-    <div class="tiny faint mono" style="margin-top:2px">${U.fmt(al.today)} allowed · ${U.fmt(al.spentToday)} spent today${al.correction>0?` · ${U.fmt(al.base)} normally`:al.correction<0?` · up from ${U.fmt(al.base)}`:""}</div>
-    ${al.message ? `<div class="tiny" style="margin-top:6px;color:${al.impossible?'var(--neg)':al.carryover<0?'var(--pos)':'var(--warn)'}">${esc(al.message)}</div>` : ""}
+      ${al.configured
+        ? `<span class="mono" style="font-weight:750;color:${al.remainingToday<0?'var(--neg)':'var(--pos)'}">${U.fmt(al.remainingToday)} left</span>`
+        : `<span class="tiny faint">not set</span>`}</div>
+    ${al.configured
+      ? `<div class="tiny faint mono" style="margin-top:2px">${U.fmt(al.today)} allowed · ${U.fmt(al.spentToday)} spent today${al.correction>0?` · ${U.fmt(al.base)} normally`:al.correction<0?` · up from ${U.fmt(al.base)}`:""}</div>
+         ${al.message ? `<div class="tiny" style="margin-top:6px;color:${al.impossible?'var(--neg)':al.carryover<0?'var(--pos)':'var(--warn)'}">${esc(al.message)}</div>` : ""}`
+      : `<div class="tiny faint" style="margin-top:3px">Set your monthly plan to get a daily allowance — add monthly income in Settings or split your salary in Plan.</div>`}
   </div>
 
   <div class="card">
@@ -2972,6 +2981,15 @@ function wireAccounts(){
 function allowanceInfoHTML(){
   const a = F.dailyAllowance();
   const mk = U.monthKey();
+  if (!a.configured){
+    return `
+    <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
+    <div class="pagehead"><h1>Daily allowance</h1></div>
+    <div class="card">
+      <p>There's no daily allowance yet because no monthly plan is set.</p>
+      <p class="tiny faint" style="margin-top:8px">Add your <b>monthly income</b> in Settings → Money, or split your salary into envelopes on the Plan screen. The allowance is your spendable money divided across the month, self-correcting for over/underspending.</p>
+    </div>`;
+  }
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Daily allowance</h1></div>
@@ -2997,7 +3015,8 @@ function allowanceInfoHTML(){
   `;
 }
 function wireAllowanceInfo(){
-  FULL.querySelector("#alFloorSave").addEventListener("click", async () => {
+  const save = FULL.querySelector("#alFloorSave");           // absent when no plan is configured
+  if (save) save.addEventListener("click", async () => {
     await DB.setMeta("allowanceFloor", U.toBaisa(FULL.querySelector("#alFloor").value));
     await refresh(); toast("Saved"); openOverlay("allowanceInfo"); render();
   });
@@ -4785,13 +4804,20 @@ async function awardXp(n){
   if (after > before) toast("LEVEL " + after);
 }
 
+/* Every quest keys off a condition it can actually verify TODAY (see questCtx).
+ * `avail(c)` gates quests that need a configured allowance: if it returns false the
+ * quest is UNAVAILABLE — never auto-completed, never awards XP, shown with `hint`. */
 const QUEST_POOL = [
-  { id: "log",     label: "Log every purchase today",     xp: 15, check: (c) => c.expensesToday >= 1 },
-  { id: "under",   label: "Stay under today's allowance", xp: 15, check: (c) => c.spentToday <= c.allowanceBase + 1 && c.expensesToday >= 1 },
-  { id: "streak",  label: "Keep your no-overspend streak",xp: 15, check: (c) => c.streak >= 1 && c.streakToday },
-  { id: "fund",    label: "Fund a savings goal",          xp: 15, check: (c) => c.goalFundedToday },
-  { id: "note",    label: "Add a note to a transaction",  xp: 15, check: (c) => c.notedToday },
-  { id: "nospend", label: "Survive a no-spend day",       xp: 15, check: (c) => c.dayIsOver && c.expensesToday === 0 },
+  { id: "log",     label: "Log a purchase today",          xp: 15, check: (c) => c.expensesToday >= 1 },
+  { id: "under",   label: "Spend within today's allowance",xp: 15,
+    avail: (c) => c.allowanceConfigured, hint: "Set your monthly plan to unlock",
+    check: (c) => c.expensesToday >= 1 && c.spentToday <= c.allowanceToday + 1 },
+  { id: "streak",  label: "Keep your no-overspend streak", xp: 15,
+    avail: (c) => c.allowanceConfigured, hint: "Set your monthly plan to unlock",
+    check: (c) => c.spentToday <= c.allowanceToday + 1 },
+  { id: "fund",    label: "Fund a savings goal",           xp: 15, check: (c) => c.goalFundedToday },
+  { id: "note",    label: "Add a note to a transaction",   xp: 15, check: (c) => c.notedToday },
+  { id: "nospend", label: "Survive a no-spend day",        xp: 15, check: (c) => c.dayIsOver && c.expensesToday === 0 },
 ];
 /* deterministic per-day pick of 3 (small LCG seeded by the date string) */
 function todaysQuests(ymd = U.ymd()){
@@ -4808,17 +4834,16 @@ function questCtx(){
   const today = U.ymd();
   const now = new Date();
   const todayTx = S.tx.filter(t => U.ymd(new Date(t.ts)) === today);
-  const al = F.dailyAllowance();
+  const spendToday = todayTx.filter(t => F.isSpend(t));
+  const al = F.dailyAllowance(now);
   return {
-    expensesToday: todayTx.filter(t => F.isSpend(t)).length,
-    spentToday: U.sum(todayTx.filter(t => F.isSpend(t)), t => t.amount),
-    allowanceBase: al.base,
-    streak: S.settings.streak || 0,
-    streakToday: true,
-    goalFundedToday: (S.tx.some(t => t.type === "transfer" && U.ymd(new Date(t.ts)) === today)),
+    expensesToday: spendToday.length,
+    spentToday: U.sum(spendToday, t => t.amount),
+    allowanceConfigured: al.configured,                 // is there a real monthly plan / income?
+    allowanceToday: al.today,                           // today's actual allowance figure (post-correction, floored)
+    goalFundedToday: S.tx.some(t => t.type === "transfer" && U.ymd(new Date(t.ts)) === today),
     notedToday: todayTx.some(t => (t.note || "").trim().length > 0),
     dayIsOver: now.getHours() >= 21,
-    expensesTodayZero: todayTx.filter(t => F.isSpend(t)).length === 0,
   };
 }
 async function syncQuests(){
@@ -4830,6 +4855,7 @@ async function syncQuests(){
   let gained = 0;
   for (const q of todaysQuests(today)){
     if (g.quests.done.includes(q.id)) continue;
+    if (q.avail && !q.avail(ctx)) continue;               // unmeasurable today — no auto-complete, no XP
     let ok = false; try { ok = !!q.check(ctx); } catch(_){}
     if (ok){ g.quests.done.push(q.id); gained += q.xp; toast("QUEST · " + q.label); }
   }
@@ -4842,8 +4868,13 @@ function gamePanelHTML(){
   const lv = levelFor(g.xp);
   const done = (g.quests && g.quests.ymd === U.ymd()) ? (g.quests.done || []) : [];
   const streak = S.settings.streak || 0;
+  const ctx = questCtx();
   const quests = todaysQuests().map(q => {
     const d = done.includes(q.id);
+    if (!d && q.avail && !q.avail(ctx)){
+      return `<div class="quest unavail"><span class="q-box">${svgIcon("lock")}</span>
+        <span class="q-label">${esc(q.label)}<span class="q-hint">${esc(q.hint || "Not available yet")}</span></span></div>`;
+    }
     return `<div class="quest${d ? " done" : ""}"><span class="q-box">${d ? svgIcon("check") : svgIcon("diamond")}</span>
       <span class="q-label">${esc(q.label)}</span><span class="q-xp">+${q.xp}</span></div>`;
   }).join("");

@@ -516,6 +516,53 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   win.eval('go("home")'); await sleep(50);
   ok("Monarch: gamification panel renders on Home", !!$("#view .game-panel"));
   ok("Monarch: panel shows 3 daily quests", $$("#view .game-panel .quest").length === 3);
+
+  // --- PART 0: allowance-dependent quests key off TODAY, not the historical streak ---
+  // (the pure check()/avail() logic is unit-tested in test.mjs; here we verify the rendering + copy)
+  {
+    win.eval(`todaysQuests = function(){ return ["streak","under","log"].map(function(id){ return QUEST_POOL.find(function(q){return q.id===id;}); }); }`);
+    win.eval("window.__realCtx = questCtx; window.__realAllow = F.dailyAllowance;");
+
+    // no plan configured -> streak/under render 'unavailable' with a prompt, log stays a normal quest
+    win.eval(`questCtx = function(){ return { expensesToday:0, spentToday:0, allowanceConfigured:false, allowanceToday:0, goalFundedToday:false, notedToday:false, dayIsOver:false }; }`);
+    win.eval(`S.settings.game = { xp: 7, quests: { ymd:"", done:[] } };`);
+    await win.eval("(async()=>{ await syncQuests(); })()"); win.eval("go('home')"); await sleep(40);
+    ok("PART0: no-plan -> at least one quest row is 'unavailable'", $$("#view .game-panel .quest.unavail").length >= 1);
+    ok("PART0: unavailable row prompts to set the monthly plan", /unlock|monthly plan/i.test($("#view .game-panel .quest.unavail").textContent));
+    ok("PART0: no-plan -> allowance quests not auto-completed, no XP for an unmeasurable condition",
+       win.eval("S.settings.game.xp") === 7 && !win.eval("JSON.stringify(S.settings.game.quests.done)").includes("streak") && !win.eval("JSON.stringify(S.settings.game.quests.done)").includes("under"));
+    ok("PART0: the non-allowance 'log' quest is still a normal (non-unavailable) row",
+       [...$$("#view .game-panel .quest")].some(q => /log a purchase/i.test(q.textContent) && !q.classList.contains("unavail")));
+
+    // overspent today (plan configured) -> streak/under stay incomplete
+    win.eval(`questCtx = function(){ return { expensesToday:3, spentToday:580000, allowanceConfigured:true, allowanceToday:225000, goalFundedToday:false, notedToday:false, dayIsOver:false }; }`);
+    win.eval(`S.settings.game = { xp: 0, quests: { ymd:"", done:[] } };`);
+    await win.eval("(async()=>{ await syncQuests(); })()");
+    ok("PART0: overspent day -> streak quest NOT complete", !win.eval("JSON.stringify(S.settings.game.quests.done)").includes("streak"));
+    ok("PART0: overspent day -> under quest NOT complete", !win.eval("JSON.stringify(S.settings.game.quests.done)").includes("under"));
+    ok("PART0: overspent day -> no XP from streak/under (only the log quest, +15)", win.eval("S.settings.game.xp") === 15);
+
+    // genuinely under-allowance day -> streak completes
+    win.eval(`questCtx = function(){ return { expensesToday:1, spentToday:800, allowanceConfigured:true, allowanceToday:225000, goalFundedToday:false, notedToday:false, dayIsOver:false }; }`);
+    win.eval(`S.settings.game = { xp: 0, quests: { ymd:"", done:[] } };`);
+    await win.eval("(async()=>{ await syncQuests(); })()");
+    ok("PART0: under-allowance day -> streak quest completes", win.eval("JSON.stringify(S.settings.game.quests.done)").includes("streak"));
+
+    // allowance panel copy when unconfigured
+    win.eval(`F.dailyAllowance = function(){ return { base:0, today:0, rawToday:0, floor:0, configured:false, spentToday:0, remainingToday:0, carryover:0, correction:0, spreadDays:7, daysLeft:10, impossible:false, message:null, options:[] }; }`);
+    win.eval("go('home')"); await sleep(40);
+    ok("PART0: allowance panel prompts to set a plan, not '0.000 allowed'",
+       /set your monthly plan/i.test($("#view").textContent) && !/0\.000 allowed/.test($("#view").textContent));
+    win.eval("openOverlay('allowanceInfo')"); await sleep(40);
+    ok("PART0: allowance overlay explains there's no plan", /no monthly plan is set/i.test($("#full").textContent));
+    win.eval("closeFull()"); await sleep(150);
+
+    // restore real functions + a sane state for the rest of the suite
+    win.eval("questCtx = window.__realCtx; F.dailyAllowance = window.__realAllow;");
+    win.eval(`S.settings.game = { xp: 0, quests: { ymd:"", done:[] } };`);
+    win.eval("go('home')"); await sleep(40);
+  }
+
   ok("Monarch: panel shows an XP bar", !!$("#view .game-panel .xpbar > i"));
   ok("Monarch: Home header shows the music toggle", !!$("#musicToggle"));
   {

@@ -96,7 +96,7 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   QR, validateSharedTheme, encodeThemeLink, decodeThemeLink, serializeThemeForShare, buildShareLink,
   isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
   b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
-  gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, themeMusic,
+  gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, questCtx, themeMusic,
   get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
@@ -402,6 +402,36 @@ eq("advanceDue custom 10d", U.ymd(new Date(T.advanceDue(U.parseYMD("2026-08-01")
   ok("todaysQuests varies across days", other !== q1.map((q) => q.id).join(",") || T.QUEST_POOL.length <= 3);
   ok("every quest id is from the pool", q1.every((q) => T.QUEST_POOL.some((p) => p.id === q.id)));
   ok("every quest awards positive XP", q1.every((q) => q.xp > 0));
+
+  // ---- PART 0 regression: quests key off a condition verified TODAY ----
+  const pool = Object.fromEntries(T.QUEST_POOL.map((q) => [q.id, q]));
+  const streakQ = pool.streak, underQ = pool.under;
+  // 1. overspending today leaves the streak quest INCOMPLETE (was: complete on streak>0)
+  ok("streak quest: not complete on a day you overspent",
+     streakQ.check({ allowanceConfigured: true, allowanceToday: 5000, spentToday: 58000, expensesToday: 3 }) === false);
+  ok("under quest: not complete on a day you overspent",
+     underQ.check({ allowanceConfigured: true, allowanceToday: 5000, spentToday: 58000, expensesToday: 3 }) === false);
+  // 2. a genuinely under-allowance day completes it
+  ok("streak quest: completes on an at-or-under-allowance day",
+     streakQ.check({ allowanceConfigured: true, allowanceToday: 5000, spentToday: 4200, expensesToday: 2 }) === true);
+  ok("under quest: completes when you spent something and stayed under",
+     underQ.check({ allowanceConfigured: true, allowanceToday: 5000, spentToday: 4200, expensesToday: 2 }) === true);
+  ok("streak quest: a no-spend day still counts", streakQ.check({ allowanceConfigured: true, allowanceToday: 5000, spentToday: 0, expensesToday: 0 }) === true);
+  // 3. no plan configured -> UNAVAILABLE (avail=false), never auto-completed, no XP
+  ok("streak quest has an availability gate", typeof streakQ.avail === "function");
+  ok("streak quest: unavailable when no allowance is configured", streakQ.avail({ allowanceConfigured: false }) === false);
+  ok("under quest: unavailable when no allowance is configured", underQ.avail({ allowanceConfigured: false }) === false);
+  ok("streak quest: available once an allowance exists", streakQ.avail({ allowanceConfigured: true }) === true);
+  ok("quests with no allowance dependency have no avail gate",
+     [pool.log, pool.fund, pool.note, pool.nospend].every((q) => !q.avail));
+  ok("the old hardcoded streakToday flag is gone", !/streakToday/.test(html));
+
+  // dailyAllowance().configured mirrors whether income/plan exists
+  T.S.settings.monthlyIncome = 0; T.S.plans = []; T.S.tx = [];
+  ok("dailyAllowance: configured=false with no income/plan/income-tx", T.F.dailyAllowance().configured === false);
+  T.S.settings.monthlyIncome = 900000;
+  ok("dailyAllowance: configured=true once monthly income is set", T.F.dailyAllowance().configured === true);
+  T.S.settings.monthlyIncome = 0;
 
   // music controller: never touches the network before a tap
   eq("themeMusic starts un-started", T.themeMusic.started, false);
