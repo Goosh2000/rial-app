@@ -127,6 +127,27 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   await until(() => /Safe to spend/i.test($("#view").textContent), "home again");
   ok("home 'Out' total includes the 5.000", /5\.000/.test($("#view").textContent));
 
+  // --- Settings is reachable: a persistent gear button in the header, every tab ---
+  {
+    const gearOn = (tab) => {
+      click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === tab));
+      const g = $("#settingsBtn");
+      return g && g.getAttribute("aria-label") && /gear|setting/i.test(g.getAttribute("aria-label"));
+    };
+    ok("Settings gear present in header on Home", gearOn("home"));
+    ok("Settings gear present in header on Transactions", gearOn("tx"));
+    ok("Settings gear present in header on Plan", gearOn("plan"));
+    ok("Settings gear present in header on Insights", gearOn("insights"));
+    click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "home"));
+    await until(() => $("#settingsBtn"), "back on home");
+    const gear = $("#settingsBtn");
+    ok("Settings gear has a 44px min touch target", /min-width:\s*44px/.test(win.getComputedStyle(gear).minWidth) || parseInt(win.getComputedStyle(gear).minWidth) >= 44 || parseInt(win.getComputedStyle(gear).minHeight) >= 44);
+    click(gear);
+    await until(() => $("#full.open") && /Settings/i.test($("#full h1")?.textContent || ""), "settings panel opened by gear");
+    ok("tapping the gear opens the Settings panel", !!$("#full.open") && !!$("#full [data-theme-set]") && /Settings/i.test($("#full h1").textContent));
+    win.eval("closeFull()"); await sleep(200);
+  }
+
   // Plan tab + sub-tab switching
   click([...$$("nav#tabs [data-tab]")].find((b) => b.dataset.tab === "plan"));
   await until(() => $$("[data-plansub]").length === 4, "plan sub-tabs");

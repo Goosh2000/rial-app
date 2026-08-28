@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "13";  // v13: Monarch music — pick an audio file, stored as a Blob in IndexedDB (device-local)
+const SW_VERSION = "14";  // v14: persistent Settings (gear) + Notifications entry points in every screen header
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

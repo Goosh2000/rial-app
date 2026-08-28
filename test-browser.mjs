@@ -169,6 +169,35 @@ const failedRequests = [];
   await page.evaluate(() => document.querySelector('nav#tabs [data-tab="home"]').click());
   await new Promise((r) => setTimeout(r, 200));
 
+  // ---- Settings is reachable: persistent gear in the header on every tab ----
+  {
+    const gear = await page.evaluate(() => {
+      const perTab = {};
+      for (const t of ["home", "tx", "plan", "insights"]) {
+        document.querySelector(`nav#tabs [data-tab="${t}"]`).click();
+        const g = document.getElementById("settingsBtn");
+        const r = g ? g.getBoundingClientRect() : null;
+        perTab[t] = { present: !!g, aria: g ? g.getAttribute("aria-label") : null, w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0 };
+      }
+      return perTab;
+    });
+    for (const t of ["home", "tx", "plan", "insights"]) {
+      ok(`Settings gear present + labelled on "${t}"`, gear[t].present && /setting/i.test(gear[t].aria || ""), JSON.stringify(gear[t]));
+      ok(`Settings gear has a >=44px touch target on "${t}"`, gear[t].w >= 44 && gear[t].h >= 44, JSON.stringify(gear[t]));
+    }
+    await page.evaluate(() => document.querySelector('nav#tabs [data-tab="insights"]').click());
+    await new Promise((r) => setTimeout(r, 150));
+    await page.evaluate(() => document.getElementById("settingsBtn").click());
+    await new Promise((r) => setTimeout(r, 300));
+    const opened = await page.evaluate(() => ({
+      open: !!document.querySelector("#full.open"),
+      isSettings: /Settings/i.test(document.querySelector("#full h1")?.textContent || "") && !!document.querySelector("#full [data-theme-set]"),
+    }));
+    ok("tapping the gear opens the Settings panel", opened.open && opened.isSettings, JSON.stringify(opened));
+    await page.evaluate(() => { try { closeFull(); } catch (_) {} document.querySelector('nav#tabs [data-tab="home"]').click(); });
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
   // ---- every theme renders with readable contrast ----
   const themeIds = await page.evaluate(() => (typeof THEME_IDS !== "undefined" ? THEME_IDS : []));
   ok("THEME_IDS registry exposed", themeIds.length >= 4, JSON.stringify(themeIds));
