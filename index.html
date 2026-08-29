@@ -786,6 +786,84 @@ const DB = (() => {
   return api;
 })();
 
+/* ---- [B2] DEVICE KEYS (bank-sync Phase 1) ---------------------------
+ * On-device WebCrypto identity for a future encrypted bank-email relay
+ * (Gmail -> Apps Script -> Cloudflare Worker -> Rial). The private key is
+ * generated non-extractable and persisted as a CryptoKey object in the
+ * `meta` store — IndexedDB structured-clones CryptoKeys, including
+ * non-extractable ones, the same way it already stores the music Blob
+ * (see `musicFile`). It is never exported, never transmitted, and never
+ * included in a JSON backup: its meta keys are simply absent from
+ * DB.exportAll's whitelist, matching the musicFile/musicOverride
+ * device-local convention.
+ * This module makes no network requests. Later phases will read
+ * `publicKeySpki` / `deviceToken` to register with the relay. */
+const DeviceKeys = (() => {
+  const RSA_PARAMS = { name:"RSA-OAEP", modulusLength:3072, publicExponent:new Uint8Array([1,0,1]), hash:"SHA-256" };
+  const META = {
+    enabled:   "bankSync.enabled",
+    priv:      "bankSync.privateKey",
+    pub:       "bankSync.publicKey",
+    spki:      "bankSync.publicKeySpki",   // base64 SPKI of the public key, precomputed for later upload
+    token:     "bankSync.deviceToken",     // base64url random token, independent of the keypair
+    createdAt: "bankSync.createdAt",
+  };
+
+  function isSupported(){
+    return !!(typeof window !== "undefined" && window.crypto && window.crypto.subtle && window.indexedDB && !DB.fallback);
+  }
+
+  function bytesToB64(bytes){ let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); }
+  function b64ToBytes(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+  function bytesToB64Url(bytes){ return bytesToB64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+  function b64UrlToBytes(s){ return b64ToBytes(s.replace(/-/g,"+").replace(/_/g,"/")); }
+  function randomToken(){ return bytesToB64Url(crypto.getRandomValues(new Uint8Array(32))); }
+  async function shortFingerprint(bytes){
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    return Array.from(digest.slice(0, 4)).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function generateKeyPair(){
+    const kp = await crypto.subtle.generateKey(RSA_PARAMS, false, ["encrypt", "decrypt"]);
+    const spki = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
+    await DB.setMeta(META.priv, kp.privateKey);
+    await DB.setMeta(META.pub, kp.publicKey);
+    await DB.setMeta(META.spki, bytesToB64(spki));
+  }
+
+  async function status(){
+    const enabled = await DB.meta(META.enabled, false);
+    if (!enabled) return { enabled: false };
+    const [spkiB64, token, createdAt] = await Promise.all([
+      DB.meta(META.spki, null), DB.meta(META.token, null), DB.meta(META.createdAt, null),
+    ]);
+    if (!spkiB64 || !token) return { enabled: false };
+    const [pubKeyFingerprint, tokenFingerprint] = await Promise.all([
+      shortFingerprint(b64ToBytes(spkiB64)), shortFingerprint(b64UrlToBytes(token)),
+    ]);
+    return { enabled: true, createdAt, pubKeyFingerprint, tokenFingerprint };
+  }
+
+  async function enable(){
+    await generateKeyPair();
+    await DB.setMeta(META.token, randomToken());
+    await DB.setMeta(META.createdAt, Date.now());
+    await DB.setMeta(META.enabled, true);
+  }
+  async function regenerate(){
+    await generateKeyPair();
+    await DB.setMeta(META.createdAt, Date.now());
+  }
+  async function rotateToken(){
+    await DB.setMeta(META.token, randomToken());
+  }
+  async function disable(){
+    for (const k of Object.values(META)) await DB.setMeta(k, null);
+  }
+
+  return { isSupported, status, enable, regenerate, rotateToken, disable };
+})();
+
 /* ---- [C] MODELS + SEED --------------------------------------------- */
 const DEFAULT_CATS = [
   { name:"Food",          icon:"🍽️", color:"#ff9f45", isIncome:false },
@@ -863,6 +941,7 @@ async function refresh(){
     persistGranted: await DB.meta("persistGranted", null), // true | false | null(unknown/unsupported) — navigator.storage.persist()
     persistCheckedAt: await DB.meta("persistCheckedAt", null),
     storageEstimate: (S.settings && S.settings.storageEstimate) || null,  // {usage,quota} — filled lazily by refreshStorageEstimate()
+    bankSync: await DeviceKeys.status(),  // {enabled} or {enabled:true, createdAt, pubKeyFingerprint, tokenFingerprint}
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -3367,6 +3446,32 @@ function wireSettings(){
     if (el) el.textContent = storageEstimateLine();
   }).catch(() => {});
 }
+function bankSyncHTML(s){
+  const bs = s.bankSync || { enabled: false };
+  if (!DeviceKeys.isSupported()){
+    return `<div class="card set-sec">
+      ${secHead("lock", "Bank sync", "Import bank alert emails automatically. Coming soon.")}
+      ${setRow("Not available", "Needs a secure browsing context with IndexedDB — unavailable here.", "", true)}
+    </div>`;
+  }
+  if (!bs.enabled){
+    return `<div class="card set-sec">
+      ${secHead("lock", "Bank sync", "Import bank alert emails automatically, end-to-end encrypted to this device.")}
+      ${setRow("Enable bank sync (beta)", "Generates a private key on this device. Nothing is sent anywhere yet — this only prepares the device.", `<button class="btn sm" id="bsEnable">Enable</button>`, true)}
+    </div>`;
+  }
+  const armKey = s._armBsRegenKey ? " confirm-armed" : "";
+  const armToken = s._armBsRotateToken ? " confirm-armed" : "";
+  return `<div class="card set-sec">
+    ${secHead("lock", "Bank sync", "Import bank alert emails automatically, end-to-end encrypted to this device.")}
+    ${setRow("Status", `Enabled ${bs.createdAt ? new Date(bs.createdAt).toLocaleDateString("en-GB") : ""}. Key ${esc(bs.pubKeyFingerprint)} · Token ${esc(bs.tokenFingerprint)}.`, "", true)}
+    <button class="btn sm block${armKey}" id="bsRegenKey">${s._armBsRegenKey ? "Tap again to regenerate — old key stops working" : "Regenerate key"}</button>
+    ${s._armBsRegenKey ? `<button class="btn sm block ghost" id="bsRegenKeyCancel" style="margin-top:8px">Cancel</button>` : ""}
+    <button class="btn sm block${armToken}" id="bsRotateToken" style="margin-top:8px">${s._armBsRotateToken ? "Tap again to rotate — old token stops working" : "Rotate token"}</button>
+    ${s._armBsRotateToken ? `<button class="btn sm block ghost" id="bsRotateTokenCancel" style="margin-top:8px">Cancel</button>` : ""}
+    <button class="btn sm block ghost danger" id="bsDisable" style="margin-top:8px">Disable bank sync</button>
+  </div>`;
+}
 function settingsHTML(){
   const s = S.settings;
   const armed = s._armErase ? " confirm-armed" : "";
@@ -3431,6 +3536,8 @@ function settingsHTML(){
     </div>
     <input type="file" id="fileImport" accept="application/json" hidden />
   </div>
+
+  ${bankSyncHTML(s)}
 
   <div class="card set-sec">
     ${secHead("gear", "System", "Sounds, the manual, and diagnostics. Nothing here leaves your device.")}
@@ -3533,6 +3640,10 @@ rank/level is derived from cumulative XP</div>
 
     <h2>Screenshot import</h2>
     <p>Runs on-device OCR (Tesseract, downloaded once and then cached offline) over a receipt or banking-app screenshot, then feeds the recognised text through the same SMS parser and review flow. The image never leaves the device.</p>
+    ${div}
+
+    <h2>Bank sync (in progress)</h2>
+    <p>Settings → Bank sync can generate a private key for this device, in preparation for automatically importing bank alert emails through a relay that only ever handles encrypted data. As things stand today, enabling it only creates that key on this device — nothing is sent anywhere yet.</p>
     ${div}
 
     <h2>Themes & music</h2>
@@ -3817,6 +3928,28 @@ FULL.addEventListener("click", async (e) => {
     if (!S.settings._armErase){ S.settings._armErase = true; openFull(settingsHTML()); return; }
     S.settings._armErase = false;
     await eraseEverything();
+    return;
+  }
+  if (e.target.id === "bsEnable"){
+    await DeviceKeys.enable(); await refresh(); openFull(settingsHTML()); toast("Bank sync enabled — device key generated"); return;
+  }
+  if (e.target.id === "bsRegenKeyCancel"){ S.settings._armBsRegenKey = false; openFull(settingsHTML()); return; }
+  if (e.target.id === "bsRegenKey"){
+    if (!S.settings._armBsRegenKey){ S.settings._armBsRegenKey = true; openFull(settingsHTML()); return; }
+    S.settings._armBsRegenKey = false;
+    await DeviceKeys.regenerate(); await refresh(); openFull(settingsHTML()); toast("Key regenerated");
+    return;
+  }
+  if (e.target.id === "bsRotateTokenCancel"){ S.settings._armBsRotateToken = false; openFull(settingsHTML()); return; }
+  if (e.target.id === "bsRotateToken"){
+    if (!S.settings._armBsRotateToken){ S.settings._armBsRotateToken = true; openFull(settingsHTML()); return; }
+    S.settings._armBsRotateToken = false;
+    await DeviceKeys.rotateToken(); await refresh(); openFull(settingsHTML()); toast("Token rotated");
+    return;
+  }
+  if (e.target.id === "bsDisable"){
+    if (!confirm("Disable bank sync and delete this device's key and token?")) return;
+    await DeviceKeys.disable(); await refresh(); openFull(settingsHTML()); toast("Bank sync disabled");
     return;
   }
 });

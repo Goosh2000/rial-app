@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "25";  // v25: clipboard-import route (iOS), prominent Paste box + screenshot picker, 7-day backup nudge
+const SW_VERSION = "26";  // v26: bank-sync Phase 1 — on-device WebCrypto keypair (Settings, no networking yet)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

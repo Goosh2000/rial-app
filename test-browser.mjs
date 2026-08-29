@@ -542,6 +542,60 @@ const failedRequests = [];
     await new Promise((r) => setTimeout(r, 400));
   }
 
+  // ---- bank-sync Phase 1: on-device WebCrypto keypair (real crypto.subtle + IndexedDB here) ----
+  {
+    const supported = await page.evaluate(() => DeviceKeys.isSupported());
+    ok("DeviceKeys.isSupported() is true in a real browser over localhost", supported === true);
+
+    const before = await page.evaluate(async () => await DeviceKeys.status());
+    ok("bank sync starts disabled", before.enabled === false, JSON.stringify(before));
+
+    const afterEnable = await page.evaluate(async () => { await DeviceKeys.enable(); return await DeviceKeys.status(); });
+    ok("enable() creates a keypair + token", afterEnable.enabled === true && !!afterEnable.pubKeyFingerprint && !!afterEnable.tokenFingerprint, JSON.stringify(afterEnable));
+
+    const exportCheck = await page.evaluate(async () => {
+      const pub = await DB.meta("bankSync.publicKey");
+      const priv = await DB.meta("bankSync.privateKey");
+      const spkiBytes = await crypto.subtle.exportKey("spki", pub).then((b) => b.byteLength).catch((e) => "err:" + e.name);
+      let privErr = null;
+      try { await crypto.subtle.exportKey("pkcs8", priv); } catch (e) { privErr = e.name || String(e); }
+      return { spkiBytes, privErr };
+    });
+    ok("public key exports (SPKI) successfully", typeof exportCheck.spkiBytes === "number" && exportCheck.spkiBytes > 0, JSON.stringify(exportCheck));
+    ok("private key export rejects (non-extractable)", !!exportCheck.privErr, JSON.stringify(exportCheck));
+
+    // reload persists the (non-extractable) keypair via structured-clone in IndexedDB
+    await page.reload({ waitUntil: "networkidle0" });
+    await new Promise((r) => setTimeout(r, 600));
+    const afterReload = await page.evaluate(async () => await DeviceKeys.status());
+    ok("keypair survives a reload (same fingerprints)",
+      afterReload.enabled === true && afterReload.pubKeyFingerprint === afterEnable.pubKeyFingerprint && afterReload.tokenFingerprint === afterEnable.tokenFingerprint,
+      JSON.stringify({ afterReload, afterEnable }));
+
+    // regenerate: key fingerprint changes, token doesn't
+    const afterRegen = await page.evaluate(async () => { await DeviceKeys.regenerate(); return await DeviceKeys.status(); });
+    ok("regenerate() changes the key fingerprint", afterRegen.pubKeyFingerprint !== afterEnable.pubKeyFingerprint, JSON.stringify(afterRegen));
+    ok("regenerate() keeps the token fingerprint", afterRegen.tokenFingerprint === afterEnable.tokenFingerprint, JSON.stringify(afterRegen));
+
+    // rotate token: token fingerprint changes, key doesn't
+    const afterRotate = await page.evaluate(async () => { await DeviceKeys.rotateToken(); return await DeviceKeys.status(); });
+    ok("rotateToken() changes the token fingerprint", afterRotate.tokenFingerprint !== afterRegen.tokenFingerprint, JSON.stringify(afterRotate));
+    ok("rotateToken() keeps the key fingerprint", afterRotate.pubKeyFingerprint === afterRegen.pubKeyFingerprint, JSON.stringify(afterRotate));
+
+    // JSON backup never carries private-key material or any bankSync.* meta key
+    const backup = await page.evaluate(async () => await DB.exportAll());
+    const leaked = Object.keys(backup.meta || {}).filter((k) => k.startsWith("bankSync."));
+    ok("JSON backup excludes bankSync.* keys entirely", leaked.length === 0, JSON.stringify(backup.meta && Object.keys(backup.meta)));
+
+    // disable clears every trace of local key material
+    const afterDisable = await page.evaluate(async () => {
+      await DeviceKeys.disable();
+      return { status: await DeviceKeys.status(), rawKey: await DB.meta("bankSync.privateKey"), rawToken: await DB.meta("bankSync.deviceToken") };
+    });
+    ok("disable() clears status back to disabled", afterDisable.status.enabled === false, JSON.stringify(afterDisable.status));
+    ok("disable() removes the stored private key and token", afterDisable.rawKey == null && afterDisable.rawToken == null, JSON.stringify(afterDisable));
+  }
+
   // ---- report collected errors ----
   if (failedRequests.length) console.log("  [network non-200]\n   " + failedRequests.join("\n   "));
   const realFailed = failedRequests.filter((u) => !/favicon/.test(u));

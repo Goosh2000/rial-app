@@ -173,12 +173,21 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
       ok("erase can be cancelled", /erase all/i.test($("#btnErase").textContent));
     }
 
+    // --- Bank sync (Phase 1): unsupported in jsdom (no crypto.subtle) ---
+    {
+      const heads = [...$$("#full .set-sec .sec-head h3")].map((h) => h.textContent.trim());
+      ok("Settings: Bank sync section present", heads.includes("Bank sync"));
+      const txt = $$("#full .set-sec").find((c) => /Bank sync/.test(c.querySelector(".sec-head h3")?.textContent || "")).textContent;
+      ok("Bank sync reports unavailable without WebCrypto/IndexedDB (jsdom)", /not available/i.test(txt));
+      ok("Bank sync does not offer Enable when unsupported", !$("#bsEnable"));
+    }
+
     // --- System Manual ---
     click([...$$("#full [data-act='open-manual']")][0] || $("[data-act='open-manual']"));
     await until(() => /System Manual/i.test($("#full h1")?.textContent || ""), "manual open");
     {
       const txt = $("#full .manual").textContent;
-      const need = ["Safe to Spend", "Daily allowance", "Envelopes", "Recurring", "Wishlist", "Savings goals", "Streaks", "SMS import", "Screenshot import", "Themes", "Backups", "Where does my data live"];
+      const need = ["Safe to Spend", "Daily allowance", "Envelopes", "Recurring", "Wishlist", "Savings goals", "Streaks", "SMS import", "Screenshot import", "Bank sync", "Themes", "Backups", "Where does my data live"];
       ok("Manual covers every feature section", need.every((n) => new RegExp(n, "i").test(txt)), need.filter((n) => !new RegExp(n, "i").test(txt)).join(","));
       ok("Manual states each formula (has .formula blocks)", $$("#full .manual .formula").length >= 6);
       ok("Manual: 'Where does my data live?' says on-device only, nothing uploaded", /only on this device/i.test(txt) && /(never|nothing is ever) uploaded/i.test(txt) && /clearing/i.test(txt) && /erases everything/i.test(txt));
