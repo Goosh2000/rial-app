@@ -1,8 +1,9 @@
 {
   "name": "Rial — personal finance",
   "short_name": "Rial",
+  "id": "/rial-app/",
   "description": "Private, offline personal finance tracker for OMR. All data stays on your device.",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

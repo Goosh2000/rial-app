@@ -254,6 +254,22 @@ h1,h2,h3,h4,.pagehead h1,.hero .big,.hero .label,.sheet h2{ font-family:var(--fo
 
 /* ---- [3] LAYOUT / NAV ------------------------------------------------- */
 #app{ position:fixed; inset:0; display:flex; flex-direction:column; }
+
+/* stacked notice banners (storage-context warning, clipboard-import offer).
+   Live above the scroll area so they can't be scrolled away. */
+#banners{ flex:none; }
+#banners:empty{ display:none; }
+.banner{ border-bottom:1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  background:color-mix(in srgb, var(--warn) 15%, var(--bg-elev));
+  color:var(--text); font-size:13px; line-height:1.45; padding:12px 14px; }
+.banner[data-tone="info"]{ border-bottom-color:color-mix(in srgb, var(--accent) 55%, var(--line));
+  background:color-mix(in srgb, var(--accent) 13%, var(--bg-elev)); }
+#banners > .banner:first-child{ padding-top: calc(var(--sat) + 12px); }
+.banner .banner-msg{ min-width:0; }
+.banner .banner-msg b{ color:var(--text); font-weight:700; }
+.banner .banner-sub{ display:block; margin-top:3px; color:var(--text-dim); font-size:12px; }
+.banner .banner-actions{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:9px; }
+.banner .banner-x{ margin-left:auto; min-width:32px; min-height:32px; color:var(--text-dim); font-size:20px; line-height:1; }
 #view{
   flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch;
   padding: calc(var(--sat) + 8px) 16px calc(96px + var(--sab)) 16px;
@@ -551,6 +567,7 @@ img{ max-width:100%; }
 </head>
 <body>
 <div id="app">
+  <div id="banners"></div>
   <main id="view"><!-- screens render here --></main>
   <nav id="tabs">
     <button data-tab="home"><span class="ic"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11l8-6.5 8 6.5"/><path d="M6.5 9.8V20h11V9.8"/></svg></span>Home</button>
@@ -843,6 +860,9 @@ async function refresh(){
     musicFileSize: await DB.meta("musicFileSize", 0),
     musicFileType: await DB.meta("musicFileType", ""),
     musicOverrides: await DB.meta("musicOverrides", {}),   // { <themeId>: fileName } — blobs live under "musicOverride:<id>"
+    persistGranted: await DB.meta("persistGranted", null), // true | false | null(unknown/unsupported) — navigator.storage.persist()
+    persistCheckedAt: await DB.meta("persistCheckedAt", null),
+    storageEstimate: (S.settings && S.settings.storageEstimate) || null,  // {usage,quota} — filled lazily by refreshStorageEstimate()
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -1285,6 +1305,10 @@ SCREENS.tx = () => {
   return `
   ${pageheadHTML("Transactions", `${S.tx.length} total`)}
   ${pendingCardHTML()}
+  <div class="row" style="gap:8px;margin-bottom:10px">
+    <button class="btn block" data-act="sms-paste">${svgIcon("clipboard")}Paste bank message</button>
+    <button class="btn block" data-act="ocr">${svgIcon("image")}Scan screenshot</button>
+  </div>
   <div class="field" style="margin-bottom:10px">
     <input id="txSearch" placeholder="Search notes or category" value="${esc(txFilter.q)}" />
   </div>
@@ -1576,6 +1600,8 @@ const ICON = {
   calendar:  '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   repeat:    '<path d="M17 3l3.5 3.5L17 10"/><path d="M4 12V10a4 4 0 0 1 4-4h12.5"/><path d="M7 21l-3.5-3.5L7 14"/><path d="M20 12v2a4 4 0 0 1-4 4H3.5"/>',
   disk:      '<path d="M5 4h11l3.5 3.5V20H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+  clipboard: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1"/><path d="M9 11h6M9 15h4"/>',
+  image:     '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="M4 17l5-4.5 4 3 3-2.5 4 3.5"/>',
   sparkle:   '<path d="M12 3.5 13.8 9 19.5 10.5 13.8 12 12 17.5 10.2 12 4.5 10.5 10.2 9z"/>',
   hourglass: '<path d="M6 3h12M6 21h12M7 3c0 5 5 6 5 9s-5 4-5 9M17 3c0 5-5 6-5 9s5 4 5 9"/>',
   target:    '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/>',
@@ -1598,7 +1624,7 @@ function svgIcon(name, cls){
 
 function emptyState(ic,t,p){ return `<div class="empty"><div class="e-ic">${ICON[ic]?svgIcon(ic,"big"):esc(ic)}</div><h3 style="margin-top:8px">${t}</h3><p>${p}</p></div>`; }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function fmtBytes(n){ n = +n || 0; return n < 1024 ? n + " B" : n < 1048576 ? Math.round(n/1024) + " KB" : (n/1048576).toFixed(1) + " MB"; }
+function fmtBytes(n){ n = +n || 0; return n < 1024 ? n + " B" : n < 1048576 ? Math.round(n/1024) + " KB" : n < 1073741824 ? (n/1048576).toFixed(1) + " MB" : (n/1073741824).toFixed(2) + " GB"; }
 
 /* shared page header for the four main screens — carries the persistent
    Notifications + Settings entry points (and the theme-music toggle). */
@@ -2267,7 +2293,7 @@ function liveNotifs(){
     out.push({ ic:"hourglass", t:`"${w.name}" is unlocked`, sub:U.fmtFull(w.price), tab:"plan", sub2:"wishlist" }));
   S.goals.forEach(g => { if ((g.saved||0) >= g.target) out.push({ ic:"trophy", t:`Goal reached: ${g.name}`, sub:U.fmtFull(g.target), tab:"plan" }); });
   const lb = S.settings.lastBackup ? Date.parse(S.settings.lastBackup) : 0;
-  if (Date.now() - lb > 14*86400000) out.push({ ic:"disk", t:"Backup overdue", sub: lb ? "last "+U.relDay(lb) : "never exported", tab:"settings" });
+  if (Date.now() - lb > 7*86400000) out.push({ ic:"disk", t: lb ? "Backup overdue" : "No backup yet", sub: (lb ? "last "+U.relDay(lb) : "your data is the only copy") + " — tap to export", act:"export-backup" });
   if (icsIsStale()) out.push({ ic:"calendar", t:"Calendar export is stale", sub:"recurring items changed since last export", tab:"settings" });
   return out;
 }
@@ -2277,7 +2303,15 @@ function notifCenterHTML(){
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>Needs you</h1><span class="sub">${items.length} item${items.length!==1?"s":""}</span></div>
-  ${items.length ? items.map(n => `<div class="card tight" data-notif-tab="${n.tab}" data-notif-sub="${n.sub2||""}">
+  <div class="card tight">
+    <div class="tiny faint" style="margin-bottom:8px">Add transactions</div>
+    <div class="row" style="gap:8px">
+      <button class="btn sm block" data-act="sms-paste">${svgIcon("clipboard")}Paste message</button>
+      <button class="btn sm block" data-act="ocr">${svgIcon("image")}Scan screenshot</button>
+    </div>
+    <button class="btn sm block ghost" id="notifBackup" style="margin-top:8px">${svgIcon("disk")}Export a backup now</button>
+  </div>
+  ${items.length ? items.map(n => `<div class="card tight" ${n.act?`data-notif-act="${n.act}"`:`data-notif-tab="${n.tab}" data-notif-sub="${n.sub2||""}"`}>
     <div class="row" style="gap:12px"><span class="notif-ic">${svgIcon(n.ic)||svgIcon("bell")}</span>
       <div class="mid"><div class="t1" style="font-weight:600">${esc(n.t)}</div><div class="tiny faint">${esc(n.sub)}</div></div>
       <span class="faint">${svgIcon("chevron")}</span></div>
@@ -2296,6 +2330,11 @@ function wireNotifCenter(){
     if (el.dataset.notifSub) planSub = el.dataset.notifSub;
     go(tab);
   }));
+  FULL.querySelectorAll("[data-notif-act]").forEach(el => el.addEventListener("click", async () => {
+    if (el.dataset.notifAct === "export-backup"){ await doExport(); openFull(notifCenterHTML()); wireNotifCenter(); toast("Backup exported"); }
+  }));
+  const bk = FULL.querySelector("#notifBackup");
+  if (bk) bk.addEventListener("click", async () => { await doExport(); openFull(notifCenterHTML()); wireNotifCenter(); toast("Backup exported"); });
   const clr = FULL.querySelector("#notifClear");
   if (clr) clr.addEventListener("click", async () => { await DB.clear("notifications"); await refresh(); openFull(notifCenterHTML()); wireNotifCenter(); });
 }
@@ -2833,21 +2872,47 @@ function markDuplicates(entries){
 function smsHTML(){
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
-  <div class="pagehead"><h1>Paste bank SMS</h1></div>
+  <div class="pagehead"><h1>Paste bank message</h1></div>
   <div class="card">
-    <p class="tiny faint" style="margin-bottom:10px">Paste one or more messages. Formats are editable in
-      <button class="btn sm" data-act="edit-sms">SMS formats</button>. Every entry goes to a review before saving.</p>
-    <textarea id="smsText" rows="7" placeholder="Salary OMR 644.000 Credited to your Account 26/08/2026." style="width:100%;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:12px;padding:10px"></textarea>
-    <button class="btn primary block" id="smsParse" style="margin-top:10px">Parse</button>
+    <p class="tiny faint" style="margin-bottom:10px">Paste one or more bank SMS. Tap <b>Paste</b> below, or long-press
+      the box and choose <b>Paste</b>. Every entry goes to a review before anything is saved — nothing auto-saves.
+      Message formats are editable in <button class="btn sm" data-act="edit-sms">SMS formats</button>.</p>
+    <textarea id="smsText" rows="7" autofocus placeholder="Salary OMR 644.000 Credited to your Account 26/08/2026." style="width:100%;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:12px;padding:10px"></textarea>
+    <div class="row" style="gap:10px;margin-top:10px">
+      <button class="btn block" id="smsPaste">${svgIcon("clipboard")||""}Paste</button>
+      <button class="btn primary block" id="smsParse">Parse</button>
+    </div>
   </div>
   <div id="smsReview"></div>
   `;
 }
 function wireSMS(){
-  FULL.querySelector("#smsParse").addEventListener("click", () => {
+  const ta = FULL.querySelector("#smsText");
+  if (ta) setTimeout(() => { try { ta.focus(); } catch(_){} }, 50);
+  const parse = () => {
     const parsed = SmsParser.parseBatch(FULL.querySelector("#smsText").value, parserCtx());
-    if (!parsed.length){ toast("No messages found"); return; }
+    if (!parsed.length){ toast("No bank message found in that text"); return; }
     openReview(parsed, { anchor: "#smsReview", source: "sms" });
+    setTimeout(() => { const el = FULL.querySelector("#smsReview"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" }); }, 40);
+  };
+  FULL.querySelector("#smsParse").addEventListener("click", parse);
+  const pasteBtn = FULL.querySelector("#smsPaste");
+  if (pasteBtn) pasteBtn.addEventListener("click", async () => {
+    if (!(navigator.clipboard && navigator.clipboard.readText)){
+      toast("This browser won't allow a one-tap paste — long-press the box and choose Paste");
+      if (ta) ta.focus();
+      return;
+    }
+    try {
+      const t = await navigator.clipboard.readText();
+      if (!t || !t.trim()){ toast("Clipboard is empty"); return; }
+      const cur = FULL.querySelector("#smsText");
+      cur.value = cur.value ? (cur.value.replace(/\s*$/, "") + "\n" + t.trim()) : t.trim();
+      parse();
+    } catch (_) {
+      toast("Couldn't read the clipboard — long-press the box and choose Paste");
+      if (ta) ta.focus();
+    }
   });
 }
 
@@ -2978,11 +3043,15 @@ function loadTesseract(){
 function ocrHTML(){
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
-  <div class="pagehead"><h1>Scan a screenshot</h1></div>
+  <div class="pagehead"><h1>Import from a screenshot</h1></div>
   <div class="card">
-    <p class="tiny faint" style="margin-bottom:10px">Photograph or upload a bank SMS, bank-app screen, or receipt.
-      Text recognition runs entirely on this device. The first scan downloads the OCR engine (~2–4 MB) + English data (~10–15 MB), then works offline.</p>
-    <input type="file" id="ocrFile" accept="image/*" capture="environment"/>
+    <p class="tiny faint" style="margin-bottom:6px">Pick a screenshot of a bank SMS, bank-app screen, or receipt.
+      In the picker, choose <b>Photo Library</b> and select your screenshot. Text recognition runs entirely on this
+      device — the first scan downloads the OCR engine (~2–4&nbsp;MB) + English data (~10–15&nbsp;MB), then works offline.</p>
+    <p class="tiny" style="color:var(--warn);margin-bottom:10px">${svgIcon("alert")} OCR misreads bank layouts often —
+      if you have the message as <b>text</b>, <button class="btn sm" data-act="sms-paste">paste it instead</button> for an accurate import.</p>
+    <input type="file" id="ocrFile" class="vh-input" accept="image/*"/>
+    <label class="btn primary block filepick" for="ocrFile" role="button" tabindex="0">${svgIcon("image")}Choose a screenshot</label>
     <div id="ocrProgress" class="tiny faint" style="margin-top:10px"></div>
   </div>
   <div id="ocrReview"></div>
@@ -2990,7 +3059,7 @@ function ocrHTML(){
 }
 function wireOCR(){
   FULL.querySelector("#ocrFile").addEventListener("change", async (e) => {
-    const f = e.target.files[0]; if (!f) return;
+    const f = e.target.files[0]; if (!f){ return; }
     const prog = FULL.querySelector("#ocrProgress");
     const thumb = await downscaleImage(f, 700);
     prog.textContent = "Loading OCR engine…";
@@ -3004,17 +3073,24 @@ function wireOCR(){
       }});
       text = res.data.text || "";
     } catch (err){ prog.textContent = "OCR failed: " + err.message; return; }
-    prog.textContent = "Done. Review below.";
     let parsed = SmsParser.parseBatch(text, parserCtx());
     if (!parsed.length){
       parsed = [SmsParser.parseOne(text, parserCtx())].filter(Boolean);
     }
-    if (!parsed.length){ prog.textContent = "No transaction found in the image."; return; }
+    // Always land on the review screen with editable fields — even when the
+    // parser found nothing, seed one blank "needs a type" row from the raw text.
+    if (!parsed.length){
+      prog.textContent = "Couldn't read a transaction — fill it in below.";
+      parsed = [{ raw: (text || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(no text recognised)",
+                  type: "review", amount: 0, ymd: U.ymd() }];
+    } else {
+      prog.textContent = "Done. Check the fields below.";
+    }
     FULL.querySelector("#ocrReview").innerHTML = `
       <div class="card">
         <div class="row" style="gap:12px;align-items:flex-start">
           <img src="${thumb}" style="width:110px;border-radius:10px;border:1px solid var(--line)"/>
-          <div class="tiny faint">OCR is imperfect on bank UIs — check every field. Internal transfers are flagged.</div>
+          <div class="tiny faint">OCR is imperfect on bank UIs — check every field. Prefer pasting the message text when you have it.</div>
         </div>
       </div>
       <div id="ocrReviewInner"></div>`;
@@ -3102,7 +3178,7 @@ function wireSMSPatterns(){
 /* ---- [H] SETTINGS / BACKUP / OVERLAYS ------------------------------- */
 function openOverlay(name){
   const R = {
-    settings: [settingsHTML, null],
+    settings: [settingsHTML, wireSettings],
     notifs:   [notifCenterHTML, wireNotifCenter],
     csv:      [csvHTML, wireCSV],
     sms:      [smsHTML, wireSMS],
@@ -3284,6 +3360,13 @@ function themeGalleryHTML(){
     </button>`;
   }).join("")}</div>`;
 }
+/* refresh the (async) storage-usage figure once the Settings panel is open */
+function wireSettings(){
+  refreshStorageEstimate().then(() => {
+    const el = document.getElementById("diagStorage");
+    if (el) el.textContent = storageEstimateLine();
+  }).catch(() => {});
+}
 function settingsHTML(){
   const s = S.settings;
   const armed = s._armErase ? " confirm-armed" : "";
@@ -3354,9 +3437,22 @@ function settingsHTML(){
     ${setRow("Synth sounds", "A short tick on save and a chime when a goal is reached (Web Audio, no files).", `<button class="btn sm" id="setSound">${s.soundOn?"On":"Off"}</button>`, true)}
     ${setRow("System Manual", "How every number is calculated and what to set up for it to work.", `<button class="btn sm" data-act="open-manual">Open</button>`)}
     ${setRow("If the app looks stuck", "Clears the offline cache + service worker and reloads. Your data is <b>not</b> touched.", `<button class="btn sm" id="btnReset">Clear cache</button>`)}
-    <div class="tiny faint" style="margin-top:12px;line-height:1.55">
+    ${setRow("Persistent storage", persistLine(),
+      s.persistGranted === true
+        ? `<span class="tiny" style="color:var(--pos)">Granted</span>`
+        : `<button class="btn sm" id="btnPersist">${s.persistGranted === false ? "Retry" : "Enable"}</button>`)}
+    ${s.persistGranted === false ? `<div class="sched-note" style="border-color:var(--warn);margin-top:8px">
+      <div><span style="display:inline-flex;vertical-align:-.18em;color:var(--warn)">${svgIcon("alert")}</span>
+      iOS has <b>not</b> granted persistent storage. If the phone runs low on space it can clear Rial's database
+      with no warning — so keep a recent <b>Export JSON</b> backup. Tapping “Retry” after you've used the app a
+      few times (or added it to the Home Screen) often succeeds.</div></div>` : ""}
+    <div class="sub-label">Diagnostics</div>
+    <div class="tiny faint" style="line-height:1.6">
       ${s.firstUseDate ? `Tracking since <b>${new Date(U.parseYMD(s.firstUseDate)).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})}</b> — streaks and history are measured from this date.<br>` : ""}
-      Storage: ${DB.fallback ? "localStorage (fallback)" : "IndexedDB"} · Rial v1 · offline-first · no server · SW ${swState()}
+      Storage engine: ${DB.fallback ? "localStorage (fallback)" : "IndexedDB"} · Rial v1 · offline-first · no server · SW ${swState()}
+      <br>Storage used: <span id="diagStorage">${storageEstimateLine()}</span>
+      <br>Persistence: ${s.persistGranted === true ? "granted" : s.persistGranted === false ? "denied by the browser" : "not requested / unavailable"}${s.persistCheckedAt ? ` · checked ${new Date(s.persistCheckedAt).toLocaleDateString("en-GB")}` : ""}
+      <br>Launch context: ${isStandalone() ? "installed app (Home Screen)" : "browser tab" + (isIOS() ? " — data is separate from the installed app" : "")}
       ${!DB.fallback ? `<br><span class="mono">${musicDiag()}</span>` : ""}
     </div>
   </div>
@@ -3459,6 +3555,198 @@ function swState(){
   try { return navigator.serviceWorker && navigator.serviceWorker.controller ? "active" : "registering"; }
   catch { return "n/a"; }
 }
+
+/* ---- persistent storage --------------------------------------------------
+ * iOS/Safari can evict a PWA's IndexedDB under storage pressure unless the
+ * origin has been granted *persistent* storage. navigator.storage.persist()
+ * is meant to be called from a user gesture — we call it the moment
+ * onboarding finishes (the "Finish"/"Skip" tap) and again from a button in
+ * Settings › System. The outcome is cached in meta and surfaced in Settings.
+ *   granted === true  -> the browser promised not to evict us
+ *   granted === false -> denied; data can be cleared automatically
+ *   granted === null  -> API unavailable / not a secure context           */
+async function requestPersistentStorage(opts){
+  const silent = opts && opts.silent;
+  let granted = null;
+  try {
+    if (navigator.storage && typeof navigator.storage.persist === "function"){
+      granted = (navigator.storage.persisted && await navigator.storage.persisted())
+        ? true
+        : await navigator.storage.persist();
+    }
+  } catch (_) { granted = null; }
+  try {
+    await DB.setMeta("persistGranted", granted);
+    await DB.setMeta("persistCheckedAt", Date.now());
+  } catch (_) {}
+  if (S.settings){ S.settings.persistGranted = granted; S.settings.persistCheckedAt = Date.now(); }
+  if (!silent && granted === false){
+    toast("iOS did not grant persistent storage — your data could be cleared if the phone runs low on space. Keep exporting JSON backups.");
+  }
+  return granted;
+}
+/* one-shot storage-usage estimate for Settings › System (async; cached on S.settings) */
+async function refreshStorageEstimate(){
+  try {
+    if (navigator.storage && typeof navigator.storage.estimate === "function"){
+      const e = await navigator.storage.estimate();
+      S.settings.storageEstimate = { usage: e.usage || 0, quota: e.quota || 0 };
+    }
+  } catch (_) {}
+  return S.settings.storageEstimate;
+}
+function persistLine(){
+  const s = S.settings;
+  if (s.persistGranted === true)  return "The browser has promised not to evict Rial's data.";
+  if (s.persistGranted === false) return "Not granted — iOS may clear this data automatically if storage runs low.";
+  return "Not requested yet on this device (or not supported by this browser).";
+}
+function storageEstimateLine(){
+  const e = S.settings.storageEstimate;
+  if (!e || !e.quota) return "unavailable";
+  const pct = Math.round((e.usage / e.quota) * 100);
+  return `${fmtBytes(e.usage)} of ${fmtBytes(e.quota)}${isFinite(pct) ? ` (${pct}%)` : ""}`;
+}
+
+/* ---- install / storage-context detection (iOS storage split) ----------
+ * A URL opened from an iOS Shortcut / bookmark loads in Safari, whose
+ * storage is SEPARATE from the installed (Home Screen) PWA's. So data set
+ * up in the installed app is invisible in a Safari tab and vice-versa. */
+function isStandalone(){
+  try {
+    if (navigator.standalone === true) return true;
+    return !!(window.matchMedia &&
+      (matchMedia("(display-mode: standalone)").matches ||
+       matchMedia("(display-mode: fullscreen)").matches ||
+       matchMedia("(display-mode: minimal-ui)").matches));
+  } catch (_) { return false; }
+}
+function isIOS(){
+  const ua = navigator.userAgent || "";
+  return /iP(hone|ad|od)/.test(navigator.platform || "") ||
+         /\biPhone\b|\biPad\b|\biPod\b/.test(ua) ||
+         ((navigator.maxTouchPoints || 0) > 1 && /Macintosh/.test(ua));   // iPadOS reports as Mac
+}
+function bannerDismissed(k){ try { return localStorage.getItem("rial:banner:" + k) === "1"; } catch (_) { return false; } }
+function dismissBannerPref(k){ try { localStorage.setItem("rial:banner:" + k, "1"); } catch (_) {} }
+
+/* ---- stacked notice banners (#banners) --------------------------------
+ * showBanner(id, { tone, html, sub, actions:[{id,label,run}], dismissible })
+ *   tone: "warn" (default) | "info"
+ * closeBanner(id) removes it. Order added = order shown, top-down. */
+function closeBanner(id){ const el = document.getElementById("bn-" + id); if (el) el.remove(); }
+function bannerOpen(id){ return !!document.getElementById("bn-" + id); }
+function showBanner(id, opts){
+  const host = document.getElementById("banners");
+  if (!host) return;
+  const o = opts || {};
+  let el = document.getElementById("bn-" + id);
+  if (!el){ el = document.createElement("div"); el.id = "bn-" + id; el.className = "banner"; host.appendChild(el); }
+  el.dataset.tone = o.tone || "warn";
+  const actions = o.actions || [];
+  el.innerHTML = `
+    <div class="banner-msg">${o.html || ""}${o.sub ? `<span class="banner-sub">${o.sub}</span>` : ""}</div>
+    ${actions.length || o.dismissible !== false ? `<div class="banner-actions">
+      ${actions.map(a => `<button class="btn sm${a.primary ? " primary" : ""}" data-ba="${esc(a.id)}">${esc(a.label)}</button>`).join("")}
+      ${o.dismissible !== false ? `<button class="banner-x" data-ba="__x" aria-label="Dismiss">&times;</button>` : ""}
+    </div>` : ""}`;
+  el.querySelectorAll("[data-ba]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.ba;
+    if (k === "__x"){ closeBanner(id); if (typeof o.onDismiss === "function") o.onDismiss(); return; }
+    const a = actions.find(x => x.id === k);
+    if (a && typeof a.run === "function") a.run();
+  }));
+}
+
+/* Storage-context warning: we're in an iOS browser tab, where the installed
+ * (Home Screen) copy's data is in a separate store and invisible here. */
+function maybeShowContextBanner(onboarded){
+  closeBanner("ctx");
+  if (!isIOS() || isStandalone()) return;
+  if (onboarded && bannerDismissed("safariSplit")) return;
+
+  showBanner("ctx", {
+    tone: "warn",
+    dismissible: onboarded,
+    html: `<b>You're viewing Rial in Safari.</b> Your saved data lives in the app on your Home&nbsp;Screen — open it from there.`,
+    sub: onboarded
+      ? "The Safari copy and the installed app keep separate databases — they don't share data."
+      : "The installed app and this Safari tab keep separate databases. If you've already set Rial up, your money is safe in the installed app.",
+    actions: onboarded ? [] : [
+      { id: "here", label: "Continue here anyway", run: () => { closeBanner("ctx"); if (typeof renderOnb === "function") renderOnb(); } },
+    ],
+    onDismiss: () => dismissBannerPref("safariSplit"),
+  });
+}
+
+/* ---- clipboard import (the iOS-safe route: Shortcut copies the SMS, user
+ * opens the installed app, we offer to import what's on the clipboard) ----
+ * iOS only: on desktop/Android the ?sms= link and paste box already suffice,
+ * and a clipboard prompt on every window focus would be noise. */
+function hashStr(s){
+  let h = 5381; s = String(s || "");
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return String(h >>> 0);
+}
+const clipImport = { suppressUntilRefocus: false };
+function clipboardApiAvailable(){
+  return !!(navigator.clipboard && typeof navigator.clipboard.readText === "function") && window.isSecureContext !== false;
+}
+async function offerClipboardImport(){
+  if (!window.__rialReady) return;
+  if (!isIOS()) return;                                   // see note above
+  if (!clipboardApiAvailable()) return;                   // manual paste box covers this case
+  if (clipImport.suppressUntilRefocus) return;
+  if (bannerOpen("clip")) return;
+  if (FULL.classList.contains("open") || SHEET.classList.contains("open")) return;
+  if (!(await DB.meta("onboarded", false))) return;
+  showBanner("clip", {
+    tone: "info",
+    html: `<b>Import a bank message from your clipboard?</b>`,
+    sub: "If you copied an SMS (or ran the Rial shortcut), tap Import to check and save it.",
+    actions: [{ id: "import", label: "Import", primary: true, run: doClipboardImport }],
+    onDismiss: () => { clipImport.suppressUntilRefocus = true; },
+  });
+}
+async function doClipboardImport(){
+  let text = "";
+  try { text = await navigator.clipboard.readText(); }
+  catch (_) {
+    // permission denied / not permitted without a stronger gesture — fall back
+    closeBanner("clip");
+    clipImport.suppressUntilRefocus = true;
+    openOverlay("sms");
+    const ta = FULL.querySelector("#smsText");
+    if (ta){ ta.focus(); toast("Long-press the box and choose Paste"); }
+    return;
+  }
+  closeBanner("clip");
+  clipImport.suppressUntilRefocus = true;
+  text = (text || "").trim();
+  if (!text){ toast("Clipboard is empty — copy a bank message first"); return; }
+
+  const h = hashStr(text);
+  if (h === (await DB.meta("clipLastHash", null))){
+    toast("That message is already imported");
+    return;
+  }
+  await DB.setMeta("clipLastHash", h);
+
+  let parsed = [];
+  try { parsed = SmsParser.parseBatch(text, parserCtx()); } catch (_) {}
+  if (!parsed.length){
+    try { const one = SmsParser.parseOne(text, parserCtx()); if (one) parsed = [one]; } catch (_) {}
+  }
+  openOverlay("sms");
+  const ta = FULL.querySelector("#smsText");
+  if (ta) ta.value = text;
+  if (parsed.length){
+    openReview(parsed, { anchor: "#smsReview", source: "sms" });
+    setTimeout(() => { const el = FULL.querySelector("#smsReview"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" }); }, 60);
+  } else {
+    toast("Couldn't read that as a bank message — edit it below, then Parse");
+  }
+}
 async function resetApp(){
   toast("Clearing cache…");
   try {
@@ -3516,6 +3804,14 @@ FULL.addEventListener("click", async (e) => {
   if (e.target.id === "btnExport"){ await doExport(); openFull(settingsHTML()); }
   if (e.target.id === "btnImport"){ document.getElementById("fileImport").click(); }
   if (e.target.id === "btnReset"){ await resetApp(); return; }
+  if (e.target.id === "btnPersist"){
+    const g = await requestPersistentStorage();          // direct user gesture — the button tap
+    await refreshStorageEstimate();
+    await refresh();
+    openFull(settingsHTML());
+    toast(g === true ? "Persistent storage granted" : g === false ? "iOS still won't grant it — keep backups" : "This browser doesn't support the request");
+    return;
+  }
   if (e.target.id === "btnEraseCancel"){ S.settings._armErase = false; openFull(settingsHTML()); return; }
   if (e.target.id === "btnErase"){
     if (!S.settings._armErase){ S.settings._armErase = true; openFull(settingsHTML()); return; }
@@ -3530,15 +3826,15 @@ FULL.addEventListener("input", (e) => {
 // a .filepick label carries data-scope ("global" | "theme"); remember which one was tapped
 document.addEventListener("pointerdown", (e) => {
   const l = e.target.closest && e.target.closest(".filepick");
-  if (l) themeMusic._pickScope = l.dataset.scope === "theme" ? "theme" : "global";
+  if (l && l.dataset.scope) themeMusic._pickScope = l.dataset.scope === "theme" ? "theme" : "global";
 }, true);
-// keyboard a11y for the file-pick <label> — works from Settings OR the orb's music sheet
+// keyboard a11y for any file-pick <label> — activates the input named by its `for`
 document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " " || e.key === "Spacebar") &&
       e.target.classList && e.target.classList.contains("filepick")){
     e.preventDefault();
-    themeMusic._pickScope = e.target.dataset.scope === "theme" ? "theme" : "global";
-    const inp = document.getElementById("musicFilePick");
+    if (e.target.dataset.scope) themeMusic._pickScope = e.target.dataset.scope === "theme" ? "theme" : "global";
+    const inp = document.getElementById(e.target.getAttribute("for") || "musicFilePick");
     if (inp) inp.click();                                 // synchronous, inside the keydown gesture
   }
 });
@@ -4861,9 +5157,15 @@ async function finishOnb(){
     }
   }
   await DB.setMeta("onboarded", true);
+  // We're still inside the "Finish"/"Skip" tap here — the user gesture that
+  // navigator.storage.persist() wants. Ask now so iOS won't silently evict
+  // the data the user just entered. Result shows in Settings › System.
+  await requestPersistentStorage();
   await refresh();
+  refreshStorageEstimate();
   ONB.hidden = true; ONB.style.display = "none"; ONB.innerHTML = "";
   render();
+  maybeShowContextBanner(true);
   afterInteraction();
 }
 
@@ -5571,13 +5873,45 @@ async function boot(){
   go("home");
   handleUrlParams();                      // ?sms= / ?view=add from an iOS Shortcut
 
-  if (!(await DB.meta("onboarded", false))) renderOnb();
+  const onboarded = await DB.meta("onboarded", false);
 
-  // backup nag
-  const lb = S.settings.lastBackup ? Date.parse(S.settings.lastBackup) : 0;
-  if (Date.now() - lb > 14*86400000){
-    setTimeout(() => toast("Backup is " + (lb ? "overdue" : "not set") + " — export from Settings"), 1200);
+  // storage-context: note when we're running as the installed app, and warn when
+  // we're in an iOS browser tab where the installed app's data isn't visible.
+  if (isStandalone()){ try { await DB.setMeta("ranStandaloneAt", Date.now()); } catch(_){} }
+  maybeShowContextBanner(onboarded);
+
+  // First run: start onboarding — UNLESS we're in an iOS browser tab, where a
+  // separate installed copy probably holds the real data. There the banner
+  // leads instead (with an explicit "set up a separate copy here" option), so
+  // we never silently spin up a second empty dataset.
+  if (!onboarded && !(isIOS() && !isStandalone())) renderOnb();
+
+  // persistent storage: (re)request silently on every launch until granted — a
+  // gesture-driven retry also lives in Settings › System. Then refresh the
+  // usage estimate so the diagnostics line is ready.
+  if (S.settings.persistGranted !== true){
+    requestPersistentStorage({ silent: true }).then(refreshStorageEstimate);
+  } else {
+    refreshStorageEstimate();
   }
+  // nag once a week while persistence is denied AND no backup exists (the one
+  // combination where an eviction means total, unrecoverable data loss).
+  if (S.settings.persistGranted === false && !S.settings.lastBackup){
+    const nagAt = await DB.meta("persistNagAt", 0);
+    if (Date.now() - nagAt > 7*86400000){
+      await DB.setMeta("persistNagAt", Date.now());
+      setTimeout(() => toast("Persistent storage is off and you have no backup — export JSON from Settings now."), 2600);
+    }
+  }
+
+  // backup nag — data is device-local and can be evicted, so keep this tight
+  const lb = S.settings.lastBackup ? Date.parse(S.settings.lastBackup) : 0;
+  if (Date.now() - lb > 7*86400000){
+    setTimeout(() => toast("Backup is " + (lb ? "overdue" : "not set") + " — export from Settings or the “Needs you” list"), 1200);
+  }
+
+  // offer to import a bank message sitting on the clipboard (iOS route)
+  offerClipboardImport();
 
   // Monthly Wrapped — auto-open in the first 3 days of a new month, once
   const seen = await DB.meta("wrappedSeen", null);
@@ -5623,9 +5957,15 @@ async function updateBadge(){
 }
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden){
-    refresh().then(() => { updateBadge(); evaluateSchedule(); flushPendingThemeSwitch(); if (currentTab) render(); });
+    clipImport.suppressUntilRefocus = false;   // a real refocus — allow the clipboard offer again
+    refresh().then(() => {
+      updateBadge(); evaluateSchedule(); flushPendingThemeSwitch();
+      if (currentTab) render();
+      offerClipboardImport();
+    });
   }
 });
+window.addEventListener("focus", () => { clipImport.suppressUntilRefocus = false; offerClipboardImport(); });
 // a #theme= link pasted into the already-open app is handled too (still shows the preview, never auto-applies)
 window.addEventListener("hashchange", () => { if (themeFragment() && !pendingImportTheme) handleThemeLinkFragment(); });
 
