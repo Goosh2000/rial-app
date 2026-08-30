@@ -1,0 +1,38 @@
+name = "rial-relay"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# No secrets live here. INGEST_SECRET is set with `wrangler secret put` — see
+# SERVER-SETUP.md. Never add a secret to this file or to [vars] below.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rial-relay-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"  # `wrangler d1 create` prints this — see SERVER-SETUP.md step 3
+
+# Hourly cleanup: purges delivered blobs after their grace period and
+# undelivered blobs older than the max age, plus stale rate-limit rows.
+# Cron Triggers are included on the Workers Free plan.
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+# Exact match only — never "*". This must be the PWA's origin (scheme+host),
+# not a path.
+ALLOWED_ORIGIN = "https://goosh2000.github.io"
+
+# Reject an /ingest body larger than this instead of truncating it.
+MAX_BODY_BYTES = 262144
+
+# A delivered blob is purged this long after being acked (grace period in
+# case a re-fetch is ever needed); an undelivered blob is purged this long
+# after being received regardless.
+DELIVERED_GRACE_SECONDS = 86400
+UNDELIVERED_MAX_AGE_SECONDS = 2592000
+
+# Fixed-window rate limits, keyed on a hash of the caller's IP.
+INGEST_RATE_LIMIT = 60
+INGEST_RATE_WINDOW_SECONDS = 300
+REGISTER_RATE_LIMIT = 5
+REGISTER_RATE_WINDOW_SECONDS = 300

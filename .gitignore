@@ -4,6 +4,10 @@ screenshot-*.png
 *.log
 .DS_Store
 
+# Cloudflare Worker local dev/state — never commit local D1 state or secrets.
+server/.wrangler/
+server/.dev.vars
+
 # theme music is user-supplied and may be copyrighted — never commit it.
 # The Monarch theme declares assets/theme-music.mp3; it ships absent and the
 # in-app control hides itself when the file is missing.
