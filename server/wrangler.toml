@@ -2,6 +2,7 @@ name = "rial-relay"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 workers_dev = true
+preview_urls = false  # a single-user relay needs exactly one live URL, not one per version
 
 # No secrets live here. INGEST_SECRET is set with `wrangler secret put` — see
 # SERVER-SETUP.md. Never add a secret to this file or to [vars] below.
@@ -9,7 +10,7 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "rial-relay-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"  # `wrangler d1 create` prints this — see SERVER-SETUP.md step 3
+database_id = "6650a0a6-b948-48e6-b3a2-99b060ceadde"
 
 # Hourly cleanup: purges delivered blobs after their grace period and
 # undelivered blobs older than the max age, plus stale rate-limit rows.
