@@ -768,7 +768,7 @@ const DB = (() => {
                     "salaryDay","monthlyIncome","savingsTargetPct","hourlyValue","soundOn","streak","streakDate","streakEverScored","firstUseDate","icsExportedAt",
                     "themeSchedule","themeManual","userThemes",
                     "smsParserPatterns","merchantRules","allowanceFloor","allowanceStreak","allowanceStreakDate",
-                    "game","musicVolume","musicOverrides"];
+                    "game","musicVolume","musicOverrides","bankSyncClient"];
       for (const k of keys) out.meta[k] = await api.meta(k);
       return out;
     },
@@ -785,6 +785,11 @@ const DB = (() => {
   };
   return api;
 })();
+
+/* shared byte<->base64 helpers (standard, not url-safe) — used by DeviceKeys
+ * and BankSyncClient to move key/ciphertext bytes in and out of JSON. */
+function bytesToBase64(bytes){ let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); }
+function base64ToBytes(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
 
 /* ---- [B2] DEVICE KEYS (bank-sync Phase 1) ---------------------------
  * On-device WebCrypto identity for a future encrypted bank-email relay
@@ -813,23 +818,25 @@ const DeviceKeys = (() => {
     return !!(typeof window !== "undefined" && window.crypto && window.crypto.subtle && window.indexedDB && !DB.fallback);
   }
 
-  function bytesToB64(bytes){ let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); }
-  function b64ToBytes(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
-  function bytesToB64Url(bytes){ return bytesToB64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
-  function b64UrlToBytes(s){ return b64ToBytes(s.replace(/-/g,"+").replace(/_/g,"/")); }
+  function bytesToB64Url(bytes){ return bytesToBase64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+  function b64UrlToBytes(s){ return base64ToBytes(s.replace(/-/g,"+").replace(/_/g,"/")); }
   function randomToken(){ return bytesToB64Url(crypto.getRandomValues(new Uint8Array(32))); }
   async function shortFingerprint(bytes){
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     return Array.from(digest.slice(0, 4)).map(b => b.toString(16).padStart(2, "0")).join("");
   }
 
-  async function generateKeyPair(){
+  async function generateKeyPairObj(){
     const kp = await crypto.subtle.generateKey(RSA_PARAMS, false, ["encrypt", "decrypt"]);
-    const spki = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
-    await DB.setMeta(META.priv, kp.privateKey);
-    await DB.setMeta(META.pub, kp.publicKey);
-    await DB.setMeta(META.spki, bytesToB64(spki));
+    const spkiBytes = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
+    return { privateKey: kp.privateKey, publicKey: kp.publicKey, spkiB64: bytesToBase64(spkiBytes) };
   }
+  async function commitKeyPair(obj){
+    await DB.setMeta(META.priv, obj.privateKey);
+    await DB.setMeta(META.pub, obj.publicKey);
+    await DB.setMeta(META.spki, obj.spkiB64);
+  }
+  async function generateKeyPair(){ await commitKeyPair(await generateKeyPairObj()); }
 
   async function status(){
     const enabled = await DB.meta(META.enabled, false);
@@ -839,9 +846,9 @@ const DeviceKeys = (() => {
     ]);
     if (!spkiB64 || !token) return { enabled: false };
     const [pubKeyFingerprint, tokenFingerprint] = await Promise.all([
-      shortFingerprint(b64ToBytes(spkiB64)), shortFingerprint(b64UrlToBytes(token)),
+      shortFingerprint(base64ToBytes(spkiB64)), shortFingerprint(b64UrlToBytes(token)),
     ]);
-    return { enabled: true, createdAt, pubKeyFingerprint, tokenFingerprint };
+    return { enabled: true, createdAt, pubKeyFingerprint, tokenFingerprint, tokenLast6: token.slice(-6) };
   }
 
   async function enable(){
@@ -861,7 +868,212 @@ const DeviceKeys = (() => {
     for (const k of Object.values(META)) await DB.setMeta(k, null);
   }
 
-  return { isSupported, status, enable, regenerate, rotateToken, disable };
+  /* ---- server-aware additions (bank-sync Phase 3A) --------------------
+   * Rotation that must also notify a server follows a strict order to
+   * avoid ever landing in a split-brain state: the NEW key/token is
+   * generated (or staged) here, the caller tells the server first, and
+   * only on server success does the caller commit it locally. If the
+   * server call fails, nothing local has changed yet, so the whole
+   * operation is safely retryable from scratch. */
+  let staged = null;   // { privateKey, publicKey, spkiB64 } — in-memory only, until committed
+  async function getCredentials(){
+    const [deviceToken, publicKeySpki] = await Promise.all([DB.meta(META.token, null), DB.meta(META.spki, null)]);
+    return { deviceToken, publicKeySpki };
+  }
+  async function getPrivateKey(){ return await DB.meta(META.priv, null); }
+  function generateTokenValue(){ return randomToken(); }
+  async function setToken(token){ await DB.setMeta(META.token, token); }
+  async function stageNewKeyPair(){ staged = await generateKeyPairObj(); return staged.spkiB64; }
+  async function commitStagedKeyPair(){
+    if (!staged) return;
+    await commitKeyPair(staged);
+    await DB.setMeta(META.createdAt, Date.now());
+    staged = null;
+  }
+  function discardStagedKeyPair(){ staged = null; }
+
+  return {
+    isSupported, status, enable, regenerate, rotateToken, disable,
+    getCredentials, getPrivateKey, generateTokenValue, setToken, stageNewKeyPair, commitStagedKeyPair, discardStagedKeyPair,
+  };
+})();
+
+/* ---- [B3] BANK SYNC CLIENT (Phase 3A) -------------------------------
+ * Talks to the Cloudflare Worker relay built in Phase 2. Every call fails
+ * gracefully offline — sync is an enhancement, never a requirement, and
+ * every function here returns {ok:false, error} instead of throwing so a
+ * caller never has to wrap it in its own try/catch.
+ *
+ * Sync safety rule: a blob is POSTed to /ack ONLY after it has both (a)
+ * decrypted successfully and (b) been written into `pendingReview` via a
+ * successful DB.setMeta — see syncNow(). A blob that fails either step is
+ * simply left alone and re-fetched next time; it is never lost. */
+const BankSyncClient = (() => {
+  const META_KEY = "bankSyncClient";
+  const DEFAULT_WORKER_URL = "https://rial-relay.nationer123.workers.dev";
+  const FETCH_TIMEOUT_MS = 12000;
+
+  function normalizeUrl(u){ return String(u || "").trim().replace(/\/+$/, ""); }
+  function withTimeout(promise, ms){
+    return Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
+    ]);
+  }
+  async function call(url, opts){
+    // Every network entry point funnels through here so "offline" always
+    // means the same thing: a rejected promise, never a thrown exception
+    // the caller forgot to catch.
+    try {
+      const res = await withTimeout(fetch(url, opts), FETCH_TIMEOUT_MS);
+      let body = null;
+      try { body = await res.json(); } catch(_){}
+      return { reached: true, ok: res.ok, status: res.status, body };
+    } catch(e){
+      return { reached: false, ok: false, status: 0, body: null };
+    }
+  }
+
+  async function getState(){
+    const s = await DB.meta(META_KEY, null);
+    return { workerUrl: DEFAULT_WORKER_URL, registered: false, lastSyncAt: null, lastPendingCount: 0, pendingReview: [], ...(s || {}) };
+  }
+  async function patchState(patch){
+    const cur = await getState();
+    const next = { ...cur, ...patch };
+    await DB.setMeta(META_KEY, next);
+    return next;
+  }
+
+  async function register(workerUrl){
+    const url = normalizeUrl(workerUrl);
+    if (!url) return { ok:false, error:"Enter the Worker URL first." };
+    await patchState({ workerUrl: url });
+    const creds = await DeviceKeys.getCredentials();
+    if (!creds.deviceToken || !creds.publicKeySpki) return { ok:false, error:"No local device key yet — enable bank sync first." };
+    const r = await call(url + "/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deviceToken: creds.deviceToken, publicKeySpki: creds.publicKeySpki }),
+    });
+    if (!r.reached) return { ok:false, error:"Couldn't reach that URL — check it and your connection." };
+    if (r.ok || r.status === 409){ await patchState({ registered: true }); return { ok:true, alreadyRegistered: r.status === 409 }; }
+    await patchState({ registered: false });
+    return { ok:false, error: (r.body && r.body.error) || ("Server said HTTP " + r.status) };
+  }
+
+  async function regenerateKeys(){
+    const state = await getState();
+    const newSpki = await DeviceKeys.stageNewKeyPair();
+    const creds = await DeviceKeys.getCredentials();     // current (soon-to-be-old) token — unchanged by a key rotation
+    const r = await call(normalizeUrl(state.workerUrl) + "/rotate", {
+      method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer " + creds.deviceToken },
+      body: JSON.stringify({ newPublicKeySpki: newSpki }),
+    });
+    if (!r.ok){
+      DeviceKeys.discardStagedKeyPair();   // nothing local changed — safe to just retry
+      return { ok:false, error: !r.reached ? "Couldn't reach the server — key NOT changed. Try again once you're online." : ((r.body && r.body.error) || ("Server said HTTP " + r.status)) };
+    }
+    await DeviceKeys.commitStagedKeyPair();
+    return { ok:true };
+  }
+
+  async function rotateToken(){
+    const state = await getState();
+    const creds = await DeviceKeys.getCredentials();     // current (soon-to-be-old) token — needed to authenticate the change
+    const newToken = DeviceKeys.generateTokenValue();
+    const r = await call(normalizeUrl(state.workerUrl) + "/rotate", {
+      method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer " + creds.deviceToken },
+      body: JSON.stringify({ newDeviceToken: newToken }),
+    });
+    if (!r.ok){
+      return { ok:false, error: !r.reached ? "Couldn't reach the server — token NOT changed. Try again once you're online." : ((r.body && r.body.error) || ("Server said HTTP " + r.status)) };
+    }
+    await DeviceKeys.setToken(newToken);
+    return { ok:true };
+  }
+
+  async function disableEverything(){
+    const state = await getState();
+    const creds = await DeviceKeys.getCredentials();
+    let serverWarning = null;
+    if (creds.deviceToken){
+      const r = await call(normalizeUrl(state.workerUrl) + "/unregister", {
+        method: "POST", headers: { Authorization: "Bearer " + creds.deviceToken },
+      });
+      if (!r.ok){
+        serverWarning = "Couldn't unregister from the server — local data is cleared anyway. Any undelivered messages there will still purge automatically within 30 days.";
+      }
+    }
+    await DeviceKeys.disable();
+    await DB.setMeta(META_KEY, null);
+    return { ok:true, serverWarning };
+  }
+
+  async function syncNow(){
+    if (!DeviceKeys.isSupported()) return { ok:false, error:"unsupported" };
+    const state = await getState();
+    const creds = await DeviceKeys.getCredentials();
+    if (!state.registered || !creds.deviceToken || !creds.publicKeySpki) return { ok:false, error:"not-registered" };
+    const privateKey = await DeviceKeys.getPrivateKey();
+    if (!privateKey) return { ok:false, error:"no-local-key" };
+
+    const r = await call(normalizeUrl(state.workerUrl) + "/blobs", { headers: { Authorization: "Bearer " + creds.deviceToken } });
+    if (!r.ok){
+      if (!r.reached) return { ok:false, error:"offline" };
+      if (r.status === 401) await patchState({ registered: false });   // server no longer knows this device
+      return { ok:false, error: "HTTP " + r.status };
+    }
+    const blobs = (r.body && r.body.blobs) || [];
+
+    const toAck = [];
+    const newEntries = [];
+    for (const row of blobs){
+      try {
+        const rawAesKey = new Uint8Array(await crypto.subtle.decrypt({ name:"RSA-OAEP" }, privateKey, base64ToBytes(row.wrappedKey)));
+        const aesKey = await crypto.subtle.importKey("raw", rawAesKey, "AES-GCM", false, ["decrypt"]);
+        const plainBytes = new Uint8Array(await crypto.subtle.decrypt(
+          { name:"AES-GCM", iv: base64ToBytes(row.iv) }, aesKey, base64ToBytes(row.ciphertext)
+        ));
+        const text = new TextDecoder().decode(plainBytes);
+        let parsed = [];
+        try { parsed = SmsParser.parseBatch(text, parserCtx()); } catch(_){}
+        if (!parsed.length && text.trim()){
+          try { const one = SmsParser.parseOne(text.trim(), parserCtx()); if (one) parsed = [one]; } catch(_){}
+        }
+        newEntries.push(...parsed);
+        toAck.push(row.id);   // decrypted OK — eligible to ack, but only after the persist step below succeeds
+      } catch(e){
+        // this ONE blob failed to decrypt/decode — skip it, never ack it, and
+        // don't let it block the rest of the batch.
+        continue;
+      }
+    }
+
+    let persisted = true;
+    if (newEntries.length){
+      try {
+        const cur = await getState();
+        const existingKeys = new Set(cur.pendingReview.map((e) => e.dedupeKey));
+        const merged = cur.pendingReview.concat(newEntries.filter((e) => !existingKeys.has(e.dedupeKey)));
+        await patchState({ pendingReview: merged });
+      } catch(e){ persisted = false; }
+    }
+
+    if (toAck.length && persisted){
+      await call(normalizeUrl(state.workerUrl) + "/ack", {
+        method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer " + creds.deviceToken },
+        body: JSON.stringify({ ids: toAck }),
+      });
+      // If this particular call fails, the blobs are simply still undelivered
+      // server-side and will be re-fetched next sync; the dedupe-by-key above
+      // means a re-fetch can't duplicate what's already in the review queue.
+    }
+
+    await patchState({ lastSyncAt: Date.now(), lastPendingCount: blobs.length - (persisted ? toAck.length : 0) });
+    return { ok:true, newCount: newEntries.length, stuckCount: blobs.length - (persisted ? toAck.length : 0) };
+  }
+
+  return { DEFAULT_WORKER_URL, getState, register, regenerateKeys, rotateToken, disableEverything, syncNow };
 })();
 
 /* ---- [C] MODELS + SEED --------------------------------------------- */
@@ -941,7 +1153,8 @@ async function refresh(){
     persistGranted: await DB.meta("persistGranted", null), // true | false | null(unknown/unsupported) — navigator.storage.persist()
     persistCheckedAt: await DB.meta("persistCheckedAt", null),
     storageEstimate: (S.settings && S.settings.storageEstimate) || null,  // {usage,quota} — filled lazily by refreshStorageEstimate()
-    bankSync: await DeviceKeys.status(),  // {enabled} or {enabled:true, createdAt, pubKeyFingerprint, tokenFingerprint}
+    bankSync: await DeviceKeys.status(),  // {enabled} or {enabled:true, createdAt, pubKeyFingerprint, tokenFingerprint, tokenLast6}
+    bankSyncClient: await BankSyncClient.getState(),  // {workerUrl, registered, lastSyncAt, lastPendingCount, pendingReview}
   };
   if (typeof rebuildThemeReg === "function") rebuildThemeReg();
 }
@@ -2995,6 +3208,45 @@ function wireSMS(){
   });
 }
 
+/* ---- bank-sync review (Phase 3A) — decrypted messages land here, exactly
+ * like a pasted SMS batch, until they're reviewed and saved. Nothing from
+ * automatic import is ever auto-applied. ---- */
+function bankSyncReviewHTML(){
+  return `
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
+  <div class="pagehead"><h1>Review synced messages</h1></div>
+  <div class="card"><p class="tiny faint">Pulled in through automatic import and decrypted on this device. Nothing is
+    saved until you review and tap Save below — exactly like a pasted SMS.</p></div>
+  <div id="bankSyncReviewAnchor"></div>
+  `;
+}
+async function wireBankSyncReview(){
+  const st = await BankSyncClient.getState();
+  const pending = st.pendingReview || [];
+  if (!pending.length){
+    FULL.querySelector("#bankSyncReviewAnchor").innerHTML = `<div class="card"><p class="tiny faint">Nothing waiting right now.</p></div>`;
+    return;
+  }
+  openReview(pending, { anchor: "#bankSyncReviewAnchor", source: "bank sync" });
+}
+function showSyncReadyBanner(n){
+  showBanner("bankSyncReady", {
+    tone: "info",
+    html: `<b>${n} new message${n>1?"s":""} from automatic import.</b>`,
+    sub: "Decrypted on this device — review before anything is saved.",
+    actions: [{ id: "review", label: "Review", primary: true, run: () => { closeBanner("bankSyncReady"); openOverlay("bankSyncReview"); } }],
+  });
+}
+/* Silent on every ordinary non-event (not registered, offline, nothing new) —
+ * only surfaces when there's actually something to look at. Never blocks or
+ * delays boot; syncNow() itself has its own network timeout. */
+async function autoSyncBankMessages(){
+  try {
+    const r = await BankSyncClient.syncNow();
+    if (r.ok && r.newCount){ await refresh(); showSyncReadyBanner(r.newCount); }
+  } catch(_){ /* sync is an enhancement — never let it surface as an app error */ }
+}
+
 /* ---- shared review UI (SMS + OCR) ---- */
 function reviewRowHTML(e, i){
   const inp = 'style="background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px;min-height:36px"';
@@ -3098,6 +3350,13 @@ async function saveReview(source){
     const rules = (S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES).slice();
     for (const r of learnedRules) if (!rules.some(x => x.match === r.match)) rules.unshift(r);
     await DB.setMeta("merchantRules", rules);
+  }
+  // Reviewing bank-sync entries clears the persisted pending queue — whether
+  // saved or left unchecked, they're resolved once this review is submitted,
+  // same as an unchecked row from a pasted SMS batch never comes back.
+  if (source === "bank sync"){
+    const st = await BankSyncClient.getState();
+    await DB.setMeta("bankSyncClient", { ...st, pendingReview: [] });
   }
   await refresh(); await updateStreak(); closeFull();
   toast(n ? `Saved ${n}${learnedRules.length?` · learned ${learnedRules.length} rule${learnedRules.length>1?"s":""}`:""}` : "Nothing to save");
@@ -3267,6 +3526,7 @@ function openOverlay(name){
     accounts: [accountsHTML, wireAccounts],
     allowanceInfo: [allowanceInfoHTML, wireAllowanceInfo],
     manual:   [manualHTML, null],
+    bankSyncReview: [bankSyncReviewHTML, wireBankSyncReview],
   };
   const [html, wire] = R[name] || R.settings;
   openFull(html());
@@ -3446,30 +3706,54 @@ function wireSettings(){
     if (el) el.textContent = storageEstimateLine();
   }).catch(() => {});
 }
+function bsMsgHTML(s){
+  if (!s._bsMsg) return "";
+  const c = s._bsMsg.ok ? "var(--pos)" : "var(--warn)";
+  return `<div class="tiny" style="color:${c};margin-top:6px">${esc(s._bsMsg.text)}</div>`;
+}
 function bankSyncHTML(s){
   const bs = s.bankSync || { enabled: false };
+  const bscRaw = s.bankSyncClient || { workerUrl: BankSyncClient.DEFAULT_WORKER_URL, registered: false, lastSyncAt: null, lastPendingCount: 0, pendingReview: [] };
+  // A device restored from a backup can carry a stale registered:true with no
+  // local key at all (the key is never in a backup) — never trust it alone.
+  const registered = !!(bs.enabled && bscRaw.registered);
+
   if (!DeviceKeys.isSupported()){
     return `<div class="card set-sec">
-      ${secHead("lock", "Bank sync", "Import bank alert emails automatically. Coming soon.")}
+      ${secHead("lock", "Automatic import", "Import bank alert emails automatically. Coming soon.")}
       ${setRow("Not available", "Needs a secure browsing context with IndexedDB — unavailable here.", "", true)}
     </div>`;
   }
   if (!bs.enabled){
     return `<div class="card set-sec">
-      ${secHead("lock", "Bank sync", "Import bank alert emails automatically, end-to-end encrypted to this device.")}
-      ${setRow("Enable bank sync (beta)", "Generates a private key on this device. Nothing is sent anywhere yet — this only prepares the device.", `<button class="btn sm" id="bsEnable">Enable</button>`, true)}
+      ${secHead("lock", "Automatic import", "Import bank alert emails automatically, end-to-end encrypted to this device.")}
+      ${setRow("Enable automatic import (beta)", "Generates a private key on this device. Nothing is sent anywhere yet — this only prepares the device.", `<button class="btn sm" id="bsEnable">Enable</button>`, true)}
     </div>`;
   }
+
   const armKey = s._armBsRegenKey ? " confirm-armed" : "";
   const armToken = s._armBsRotateToken ? " confirm-armed" : "";
+  const pendingReviewCount = (bscRaw.pendingReview || []).length;
+
   return `<div class="card set-sec">
-    ${secHead("lock", "Bank sync", "Import bank alert emails automatically, end-to-end encrypted to this device.")}
-    ${setRow("Status", `Enabled ${bs.createdAt ? new Date(bs.createdAt).toLocaleDateString("en-GB") : ""}. Key ${esc(bs.pubKeyFingerprint)} · Token ${esc(bs.tokenFingerprint)}.`, "", true)}
-    <button class="btn sm block${armKey}" id="bsRegenKey">${s._armBsRegenKey ? "Tap again to regenerate — old key stops working" : "Regenerate key"}</button>
-    ${s._armBsRegenKey ? `<button class="btn sm block ghost" id="bsRegenKeyCancel" style="margin-top:8px">Cancel</button>` : ""}
-    <button class="btn sm block${armToken}" id="bsRotateToken" style="margin-top:8px">${s._armBsRotateToken ? "Tap again to rotate — old token stops working" : "Rotate token"}</button>
-    ${s._armBsRotateToken ? `<button class="btn sm block ghost" id="bsRotateTokenCancel" style="margin-top:8px">Cancel</button>` : ""}
-    <button class="btn sm block ghost danger" id="bsDisable" style="margin-top:8px">Disable bank sync</button>
+    ${secHead("lock", "Automatic import", "Bank emails relayed through your own Cloudflare Worker, encrypted to this device the whole way — see SERVER-SETUP.md.")}
+    ${setRow("Worker URL", "From Phase 2's `wrangler deploy` output. Editable if you ever redeploy elsewhere.", `<input id="bsWorkerUrl" value="${esc(bscRaw.workerUrl)}" placeholder="https://rial-relay.<you>.workers.dev" style="width:100%"/>`, true)}
+    <button class="btn sm block" id="bsRegister" style="margin-top:8px">${registered ? "Re-register this device" : "Register this device"}</button>
+    ${bsMsgHTML(s)}
+    ${registered ? `
+      <div class="sub-label">Status</div>
+      ${setRow("Registered", `Key ${esc(bs.pubKeyFingerprint)} · Token ····${esc(bs.tokenLast6)}`, `<span class="tiny" style="color:var(--pos)">Yes</span>`)}
+      ${setRow("Last sync", bscRaw.lastSyncAt ? new Date(bscRaw.lastSyncAt).toLocaleString("en-GB") : "Never", "")}
+      ${setRow("Stuck on server", bscRaw.lastPendingCount > 0 ? `${bscRaw.lastPendingCount} message${bscRaw.lastPendingCount>1?"s":""} couldn't be decrypted last sync — see below` : "None", "")}
+      <button class="btn sm block" id="bsSyncNow" style="margin-top:8px">Sync now</button>
+      ${pendingReviewCount ? `<button class="btn sm primary block" id="bsOpenReview" style="margin-top:8px">Review ${pendingReviewCount} message${pendingReviewCount>1?"s":""}</button>` : ""}
+      <div class="sub-label">Key &amp; token</div>
+      <button class="btn sm block${armKey}" id="bsRegenKey">${s._armBsRegenKey ? "Tap again to regenerate — undelivered messages become unreadable" : "Regenerate key"}</button>
+      ${s._armBsRegenKey ? `<button class="btn sm block ghost" id="bsRegenKeyCancel" style="margin-top:8px">Cancel</button>` : ""}
+      <button class="btn sm block${armToken}" id="bsRotateToken" style="margin-top:8px">${s._armBsRotateToken ? "Tap again to rotate — undelivered messages become unreadable" : "Rotate token"}</button>
+      ${s._armBsRotateToken ? `<button class="btn sm block ghost" id="bsRotateTokenCancel" style="margin-top:8px">Cancel</button>` : ""}
+    ` : ""}
+    <button class="btn sm block ghost danger" id="bsDisable" style="margin-top:8px">Disable and delete everything</button>
   </div>`;
 }
 function settingsHTML(){
@@ -3642,8 +3926,10 @@ rank/level is derived from cumulative XP</div>
     <p>Runs on-device OCR (Tesseract, downloaded once and then cached offline) over a receipt or banking-app screenshot, then feeds the recognised text through the same SMS parser and review flow. The image never leaves the device.</p>
     ${div}
 
-    <h2>Bank sync (in progress)</h2>
-    <p>Settings → Bank sync can generate a private key for this device, in preparation for automatically importing bank alert emails through a relay that only ever handles encrypted data. As things stand today, enabling it only creates that key on this device — nothing is sent anywhere yet.</p>
+    <h2>Automatic import (in progress)</h2>
+    <p>Settings → Automatic import generates a private key on this device, then registers its <i>public</i> key with a Cloudflare Worker you deploy and control yourself (see SERVER-SETUP.md). Gmail can be set up (Apps Script, APPS-SCRIPT-SETUP.md) to relay bank alert emails to that Worker; it encrypts each one to your device's public key immediately and stores ciphertext only — it never sees the plaintext, the sender, or the subject.</p>
+    <p>On open (and via "Sync now"), Rial fetches any waiting messages, decrypts them on this device with the private key, and drops them straight into the same review screen as a pasted SMS. <b>Nothing is auto-applied</b> — every synced message still needs your review and a tap on Save, exactly like today. A message is only marked delivered on the server after it has decrypted successfully <i>and</i> been written to this device's storage, so a bad connection or a corrupted message can never make one silently disappear.</p>
+    <p>Regenerating the key or rotating the token invalidates the old one immediately — any message still waiting on the server under the old key becomes permanently unreadable, which is why both ask for a second tap. Disabling unregisters this device and asks the server to delete anything of yours it's still holding; your transactions are never touched.</p>
     ${div}
 
     <h2>Themes & music</h2>
@@ -3931,25 +4217,63 @@ FULL.addEventListener("click", async (e) => {
     return;
   }
   if (e.target.id === "bsEnable"){
-    await DeviceKeys.enable(); await refresh(); openFull(settingsHTML()); toast("Bank sync enabled — device key generated"); return;
+    await DeviceKeys.enable(); await refresh(); openFull(settingsHTML()); toast("Device key generated — now register it with your Worker"); return;
   }
+  if (e.target.id === "bsRegister"){
+    const url = val("bsWorkerUrl");
+    toast("Registering…");
+    const r = await BankSyncClient.register(url);
+    await refresh();
+    S.settings._bsMsg = r.ok
+      ? { ok:true, text: r.alreadyRegistered ? "Already registered — this device is good to go." : "Registered. Bank sync is live." }
+      : { ok:false, text: "Registration failed: " + r.error };
+    openFull(settingsHTML());
+    return;
+  }
+  if (e.target.id === "bsSyncNow"){
+    toast("Syncing…");
+    const r = await BankSyncClient.syncNow();
+    await refresh();
+    if (r.ok){
+      S.settings._bsMsg = { ok:true, text: r.newCount ? `Synced — ${r.newCount} new message${r.newCount>1?"s":""} ready to review.` : "Synced — nothing new." };
+      if (r.newCount) showSyncReadyBanner(r.newCount);
+    } else {
+      S.settings._bsMsg = { ok:false, text: r.error === "offline" ? "Couldn't reach the server — check your connection." : "Sync failed: " + r.error };
+    }
+    openFull(settingsHTML());
+    return;
+  }
+  if (e.target.id === "bsOpenReview"){ openOverlay("bankSyncReview"); return; }
   if (e.target.id === "bsRegenKeyCancel"){ S.settings._armBsRegenKey = false; openFull(settingsHTML()); return; }
   if (e.target.id === "bsRegenKey"){
     if (!S.settings._armBsRegenKey){ S.settings._armBsRegenKey = true; openFull(settingsHTML()); return; }
     S.settings._armBsRegenKey = false;
-    await DeviceKeys.regenerate(); await refresh(); openFull(settingsHTML()); toast("Key regenerated");
+    toast("Regenerating…");
+    const r = await BankSyncClient.regenerateKeys();
+    await refresh();
+    S.settings._bsMsg = r.ok ? { ok:true, text:"Key regenerated." } : { ok:false, text:"Not changed: " + r.error };
+    openFull(settingsHTML());
     return;
   }
   if (e.target.id === "bsRotateTokenCancel"){ S.settings._armBsRotateToken = false; openFull(settingsHTML()); return; }
   if (e.target.id === "bsRotateToken"){
     if (!S.settings._armBsRotateToken){ S.settings._armBsRotateToken = true; openFull(settingsHTML()); return; }
     S.settings._armBsRotateToken = false;
-    await DeviceKeys.rotateToken(); await refresh(); openFull(settingsHTML()); toast("Token rotated");
+    toast("Rotating…");
+    const r = await BankSyncClient.rotateToken();
+    await refresh();
+    S.settings._bsMsg = r.ok ? { ok:true, text:"Token rotated." } : { ok:false, text:"Not changed: " + r.error };
+    openFull(settingsHTML());
     return;
   }
   if (e.target.id === "bsDisable"){
-    if (!confirm("Disable bank sync and delete this device's key and token?")) return;
-    await DeviceKeys.disable(); await refresh(); openFull(settingsHTML()); toast("Bank sync disabled");
+    if (!confirm("Disable automatic import? This deletes this device's key and token, unregisters from the server, and wipes any of your messages still waiting there. Your transactions are not touched.")) return;
+    toast("Disabling…");
+    const r = await BankSyncClient.disableEverything();
+    await refresh();
+    S.settings._bsMsg = r.serverWarning ? { ok:false, text:r.serverWarning } : null;
+    openFull(settingsHTML());
+    toast("Automatic import disabled");
     return;
   }
 });
@@ -6045,6 +6369,10 @@ async function boot(){
 
   // offer to import a bank message sitting on the clipboard (iOS route)
   offerClipboardImport();
+
+  // Automatic import: fire-and-forget on app open. syncNow() fails silently
+  // offline or when not registered — this must never block or slow down boot.
+  autoSyncBankMessages();
 
   // Monthly Wrapped — auto-open in the first 3 days of a new month, once
   const seen = await DB.meta("wrappedSeen", null);

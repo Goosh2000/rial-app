@@ -1,7 +1,10 @@
 # Rial
 
-Private, offline-first personal finance PWA for one person. OMR currency, no backend,
-no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON backup/restore.
+Private, offline-first personal finance PWA for one person. OMR currency, no login.
+Data lives on-device in IndexedDB (localStorage fallback) with JSON backup/restore.
+An optional, self-hosted, zero-knowledge relay (Settings → Automatic import) can feed
+bank alert emails in automatically — see `SERVER-SETUP.md` / `APPS-SCRIPT-SETUP.md` — but
+the app is fully functional, offline-first, with none of that ever set up.
 
 **Live:** https://goosh2000.github.io/rial-app/ · **Repo:** https://github.com/Goosh2000/rial-app
 
@@ -23,6 +26,8 @@ no login. Data lives on-device in IndexedDB (localStorage fallback) with JSON ba
 | `verify-live.mjs` | loads the deployed URL in headless Chrome and checks it renders clean |
 | `deploy.ps1` | one-shot GitHub Pages deploy (run after `gh auth login`) |
 | `SETUP.md` | deploy + install on iPhone, clearing a stale service worker |
+| `server/` | optional Cloudflare Worker + D1 relay for automatic import — ciphertext only, see **SERVER-SETUP.md** |
+| `apps-script/Code.gs` | optional Gmail pickup for automatic import — see **APPS-SCRIPT-SETUP.md** |
 | `package.json` / `node_modules/` | **dev tooling only** — the app ships without them |
 
 ## Run locally

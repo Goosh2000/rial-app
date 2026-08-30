@@ -97,7 +97,7 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
   b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
   gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, questCtx, themeMusic,
-  updateStreak, streakDisplay, DeviceKeys, bankSyncHTML,
+  updateStreak, streakDisplay, DeviceKeys, bankSyncHTML, BankSyncClient,
   get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
@@ -915,7 +915,15 @@ ok("notifCount() is a number", typeof T.notifCount() === "number");
   ok("DeviceKeys.status() reports disabled with no crypto available", st.enabled === false);
   let threw = false, out = "";
   try { out = T.bankSyncHTML({}); } catch (e) { threw = true; out = String(e && e.stack || e); }
-  ok("bankSyncHTML() renders the unsupported state without throwing", !threw && out.includes("Bank sync") && out.includes("Not available"), out.slice(0, 200));
+  ok("bankSyncHTML() renders the unsupported state without throwing", !threw && out.includes("Automatic import") && out.includes("Not available"), out.slice(0, 200));
+}
+
+/* ---- bank-sync Phase 3A: client sync layer fails gracefully with no fetch/crypto ---- */
+{
+  const sync = await T.BankSyncClient.syncNow();
+  ok("BankSyncClient.syncNow() never throws and reports unsupported here", sync.ok === false && sync.error === "unsupported");
+  const reg = await T.BankSyncClient.register("https://example.invalid");
+  ok("BankSyncClient.register() fails gracefully with no local key, never touching fetch", reg.ok === false && /device key/i.test(reg.error));
 }
 {
   const svg = ctx.__T.sparkSVG(F.last30());

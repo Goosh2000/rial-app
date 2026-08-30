@@ -13,7 +13,7 @@
  * To wipe an old worker on a device: see "Reset app" in Settings, or in Safari:
  * Settings → Safari → Advanced → Website Data → remove this site.
  */
-const SW_VERSION = "26";  // v26: bank-sync Phase 1 — on-device WebCrypto keypair (Settings, no networking yet)
+const SW_VERSION = "27";  // v27: bank-sync Phase 3A — Automatic import client (register/sync/rotate/disable, review-only)
 const CACHE = "rial-cache-v" + SW_VERSION;
 
 const SHELL = [

@@ -19,6 +19,10 @@
  *                      Requires the device token as a Bearer credential.
  *   POST /ack        — the device marks rows delivered by id. Requires the
  *                      device token as a Bearer credential.
+ *   POST /unregister — deletes the device identity AND every blob row for
+ *                      it. Requires the device token as a Bearer credential.
+ *                      This is what a Settings "disable and delete
+ *                      everything" action calls.
  *
  * Two independent secrets exist by design: INGEST_SECRET (only Apps Script
  * ever holds it) and the device token (only Rial ever holds it). Neither
@@ -209,6 +213,19 @@ async function handleAck(request, env) {
   return json(env, { ok: true });
 }
 
+async function handleUnregister(request, env) {
+  const token = bearerToken(request);
+  const device = await getDevice(env);
+  if (!device || !token || !timingSafeEqual(token, device.device_token)) {
+    return json(env, { error: "unauthorized" }, 401);
+  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM blobs WHERE device_token = ?").bind(device.device_token),
+    env.DB.prepare("DELETE FROM device WHERE id = 1"),
+  ]);
+  return json(env, { ok: true });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return empty(env, 204);
@@ -226,6 +243,7 @@ export default {
       if (url.pathname === "/ingest" && request.method === "POST") return await handleIngest(request, env, ip);
       if (url.pathname === "/blobs" && request.method === "GET") return await handleBlobs(request, env);
       if (url.pathname === "/ack" && request.method === "POST") return await handleAck(request, env);
+      if (url.pathname === "/unregister" && request.method === "POST") return await handleUnregister(request, env);
       return json(env, { error: "not_found" }, 404);
     } catch {
       // Never log here: an exception can originate from parsing attacker-

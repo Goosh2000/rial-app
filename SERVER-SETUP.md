@@ -203,12 +203,13 @@ npx wrangler d1 execute rial-relay-db --remote --command "DELETE FROM device; DE
   there is no server-side recovery, by design. (Phase 1's Settings UI already warns
   about this for the local key; the same applies here once the pipeline is live.)
 - **Two independent secrets:** `INGEST_SECRET` (Apps Script → `/ingest`) and the
-  device token (Rial → `/blobs`, `/ack`, `/rotate`). A leaked ingest secret lets an
-  attacker submit garbage ciphertext blobs (annoying, and rate-limited) but not read
-  or redirect anything, since the Worker still only ever encrypts to whichever public
-  key is already on file. A leaked device token lets an attacker read/ack blobs and
-  rotate the identity — exactly as sensitive as it sounds, which is why it's
-  generated on-device, never in a backup, and rotatable independently of the key.
+  device token (Rial → `/blobs`, `/ack`, `/rotate`, `/unregister`). A leaked ingest
+  secret lets an attacker submit garbage ciphertext blobs (annoying, and rate-limited)
+  but not read or redirect anything, since the Worker still only ever encrypts to
+  whichever public key is already on file. A leaked device token lets an attacker
+  read/ack blobs, rotate the identity, or even unregister it — exactly as sensitive
+  as it sounds, which is why it's generated on-device, never in a backup, and
+  rotatable independently of the key (Settings → Automatic import → Rotate token).
 - **First `/register`** has no credential to check against (there's nothing to
   compare yet) — it's "whoever calls it first, wins," protected only by your
   `*.workers.dev` URL being unpublished and unguessable until you deploy and use it.
@@ -217,6 +218,11 @@ npx wrangler d1 execute rial-relay-db --remote --command "DELETE FROM device; DE
 
 ## Turning it off / deleting everything
 
+Day to day, use Rial itself: Settings → Automatic import → **Disable and delete
+everything** calls `/unregister`, which deletes the device row and every blob for it
+in one step, then clears the key/token locally. Your transactions are never touched.
+
+To tear down the Cloudflare side entirely instead:
 ```
 npx wrangler delete                          # deletes the Worker
 npx wrangler d1 delete rial-relay-db         # deletes the database and every row in it
@@ -224,8 +230,12 @@ npx wrangler d1 delete rial-relay-db         # deletes the database and every ro
 Both ask for interactive confirmation. You can also do either from the Cloudflare
 dashboard (Workers & Pages / D1) if you'd rather click through it.
 
-## What's not built yet
+## What's built so far
 
-This phase is the server only. Rial's own Settings screen doesn't call any of these
-endpoints yet — that wiring, plus Apps Script (Phase 3), comes in a later phase so the
-whole pipeline can be brought up and tested end-to-end in one pass.
+Phase 2 (this doc) is the server. Phase 3A wired Rial's own Settings screen
+(Automatic import) to call `/register`, `/blobs`, `/ack`, `/rotate`, and
+`/unregister` — sync runs on app open and via a "Sync now" button, decrypts on
+device, and drops results into the same review queue as a pasted SMS. Nothing is
+auto-applied yet. Apps Script (Phase 3B, `APPS-SCRIPT-SETUP.md`) is what actually
+feeds real bank emails into `/ingest` — set that up last, only after you've
+registered your device from within Rial.
