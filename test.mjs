@@ -97,7 +97,9 @@ src += `\n;globalThis.__T = { U, F, S, DB, newDraft, displayAmount, SCREENS, key
   isStrictColor, isStrictShadow, isStrictLength, safeStr, ThemeLinkError, THEME_LINK,
   b64urlEncodeBytes, b64urlDecodeBytes, rebuildThemeReg, isBuiltInTheme,
   gameActive, xpForLevel, levelFor, todaysQuests, QUEST_POOL, questCtx, themeMusic,
-  updateStreak, streakDisplay, DeviceKeys, bankSyncHTML, BankSyncClient,
+  updateStreak, streakDisplay, DeviceKeys, bankSyncHTML, BankSyncClient, PatternLearner,
+  computeConfidence, isCompleteExtraction, canAutoApply, findPattern, buildTxRecord, toReviewEntry,
+  AUTO_APPLY_CONFIDENCE_THRESHOLD,
   get THEME_REG(){ return THEME_REG; }, get THEME_IDS(){ return THEME_IDS; } };`;
 new vm.Script(src, { filename: "app.js" }).runInContext(ctx);
 const T = ctx.__T;
@@ -928,6 +930,120 @@ ok("notifCount() is a number", typeof T.notifCount() === "number");
 {
   const svg = ctx.__T.sparkSVG(F.last30());
   ok("sparkSVG returns <svg> with polyline", svg.includes("<svg") && svg.includes("polyline"));
+}
+
+/* ---- bank-sync Phase 4 Part B: the on-device pattern learner ---- */
+{
+  const PL = T.PatternLearner;
+  const CTX = { accountLast4: ["0017"], now: Date.now() };
+
+  // 1. tokenize offsets are exact and round-trip to the source substrings
+  const toks = PL.tokenize("Card of a/c XXXXXX5678 used for OMR 21.500 at TEST SHOP on 31/08/2026");
+  ok("tokenize: every token's offsets round-trip to its own text",
+    toks.every((t) => "Card of a/c XXXXXX5678 used for OMR 21.500 at TEST SHOP on 31/08/2026".slice(t.start, t.end) === t.text));
+
+  // 2. build a pattern from a synthetic expense message, then confirm it
+  //    extracts correctly from a SECOND, different synthetic message of the
+  //    same shape — the concrete acceptance test from the Phase 4 prompt.
+  const messageA = "Card of a/c XXXXXX5678 used for OMR 21.500 at TEST SHOP on 31/08/2026";
+  const amountA = { field: "amount", start: messageA.indexOf("21.500"), end: messageA.indexOf("21.500") + "21.500".length };
+  const merchantA = { field: "merchant", start: messageA.indexOf("TEST SHOP"), end: messageA.indexOf("TEST SHOP") + "TEST SHOP".length };
+  const dateA = { field: "date", start: messageA.indexOf("31/08/2026"), end: messageA.indexOf("31/08/2026") + "31/08/2026".length };
+
+  const built = PL.buildPattern(messageA, [amountA, merchantA, dateA]);
+  const pattern = { id: "learned_test", name: "Test learned pattern", type: "expense", re: built.re, groups: built.groups };
+
+  const onA = T.SmsParser.parseOne(messageA, { ...CTX, patterns: [pattern] });
+  ok("learned pattern extracts correctly from the message it was taught on",
+    onA && onA.amount === 21500 && onA.merchant === "TEST SHOP" && onA.ymd === "2026-08-31", onA);
+
+  // same card (its own last4 is realistically CONSTANT across a person's own
+  // alerts, and wasn't selected as a field), different amount/merchant/date —
+  // exactly what varies between two real purchase alerts on the same card.
+  const messageB = "Card of a/c XXXXXX5678 used for OMR 7.250 at ANOTHER SHOP on 15/01/2027";
+  const onB = T.SmsParser.parseOne(messageB, { ...CTX, patterns: [pattern] });
+  ok("learned pattern correctly extracts from a SECOND, different synthetic message of the same shape",
+    onB && onB.amount === 7250 && onB.merchant === "ANOTHER SHOP" && onB.ymd === "2027-01-15" && onB.type === "expense", onB);
+
+  // 3. plain-language description mentions each field and quotes real anchor text
+  const plain = PL.describePlainly(messageA, [amountA, merchantA, dateA]);
+  ok("plain-language description covers all 3 fields", plain.length === 3);
+  ok("plain-language description names the amount and quotes its anchor", /amount/.test(plain[0]) && /OMR/.test(plain[0]), plain[0]);
+
+  // 4. multi-row detection: teaching ONE row of a tab-separated report finds
+  //    every row via previewMatches, with no separate similarity detector.
+  const report = "31/08/2026\tOMR 5.000\tSHOP A\n30/08/2026\tOMR 9.250\tSHOP B\n29/08/2026\tOMR 1.100\tSHOP C";
+  const row1 = report.split("\n")[0];
+  const rowAmount = { field: "amount", start: row1.indexOf("5.000"), end: row1.indexOf("5.000") + "5.000".length };
+  const rowMerchant = { field: "merchant", start: row1.lastIndexOf("SHOP A"), end: row1.length };
+  const rowDate = { field: "date", start: 0, end: "31/08/2026".length };
+  const rowBuilt = PL.buildPattern(report, [rowAmount, rowMerchant, rowDate]);
+  const rowPattern = { id: "learned_rows", name: "Test row pattern", type: "expense", re: rowBuilt.re, groups: rowBuilt.groups };
+  const matches = PL.previewMatches(report, rowPattern, CTX);
+  eq("multi-row: taught pattern finds all 3 rows via a global match, unprompted", matches.length, 3);
+  ok("multi-row: amounts extracted correctly for every row", matches.every((m, i) => m.amount === [5000, 9250, 1100][i]), matches.map((m) => m.amount));
+  ok("multi-row: merchants extracted correctly for every row", matches.every((m, i) => m.merchant === ["SHOP A", "SHOP B", "SHOP C"][i]), matches.map((m) => m.merchant));
+}
+
+/* ---- bank-sync Phase 4 Part C: shadow mode / confidence / auto-apply gate ---- */
+{
+  const shadowPattern = { id: "learned_shadow", name: "Shadow test", learned: true, enabled: true, state: "shadow", confirmedCount: 3, rejectedCount: 0 };
+  const activePattern = { id: "learned_active", name: "Active test", learned: true, enabled: true, state: "active", confirmedCount: 5, rejectedCount: 0 };
+  const disabledActive = { id: "learned_disabled", name: "Disabled test", learned: true, enabled: false, state: "active", confirmedCount: 5, rejectedCount: 0 };
+  const builtin = { id: "card_pos", name: "built-in", type: "expense" }; // no `learned` flag — exactly like SmsParser.DEFAULT_PATTERNS
+  T.S.settings.smsParserPatterns = [shadowPattern, activePattern, disabledActive, builtin];
+
+  eq("findPattern finds a learned pattern by id", T.findPattern("learned_active").name, "Active test");
+  eq("findPattern returns null for an unknown id", T.findPattern("nope"), null);
+
+  // a complete, unambiguous, resolved expense entry against account 0017 (registered as "Main" above)
+  const rawComplete = { raw: "x", matched: "learned_active", type: "expense", amount: 5000, ymd: "2026-08-31", time: null,
+    dateAssumed: false, merchant: "TEST SHOP", counterparty: null, category: "food", fromLast4: "0017", toLast4: null,
+    source: null, dedupeKey: "expense|5000|0017|123|TEST SHOP" };
+  const resolvedComplete = T.toReviewEntry(rawComplete);
+  ok("isCompleteExtraction: true for a full, dated, registered-account expense", T.isCompleteExtraction(resolvedComplete));
+
+  const rawAssumedDate = { ...rawComplete, dateAssumed: true, dedupeKey: rawComplete.dedupeKey + "b" };
+  ok("isCompleteExtraction: false when the date was only assumed (not found in-body)", !T.isCompleteExtraction(T.toReviewEntry(rawAssumedDate)));
+
+  const rawUnregistered = { ...rawComplete, fromLast4: "9999", dedupeKey: rawComplete.dedupeKey + "c" }; // no account has last4 9999
+  ok("isCompleteExtraction: false when the account didn't resolve (fell back to primary)", !T.isCompleteExtraction(T.toReviewEntry(rawUnregistered)));
+
+  ok("computeConfidence: 0 for a 'review' (unmatched) entry — never eligible regardless of threshold", T.computeConfidence({ type: "review", matched: "review" }, null) === 0);
+  ok("computeConfidence: a complete match against a learned pattern clears the auto-apply threshold", T.computeConfidence(resolvedComplete, activePattern) >= T.AUTO_APPLY_CONFIDENCE_THRESHOLD);
+
+  const seen = new Set();
+  ok("canAutoApply: TRUE — active + learned + complete + undeduped + confident", T.canAutoApply(resolvedComplete, seen));
+
+  const shadowEntry = T.toReviewEntry({ ...rawComplete, matched: "learned_shadow", dedupeKey: rawComplete.dedupeKey + "d" });
+  ok("canAutoApply: FALSE for a SHADOW-state pattern, even with an otherwise-perfect extraction", !T.canAutoApply(shadowEntry, new Set()));
+
+  const disabledEntry = T.toReviewEntry({ ...rawComplete, matched: "learned_disabled", dedupeKey: rawComplete.dedupeKey + "e" });
+  ok("canAutoApply: FALSE for a disabled pattern, even if state is 'active'", !T.canAutoApply(disabledEntry, new Set()));
+
+  const builtinEntry = T.toReviewEntry({ ...rawComplete, matched: "card_pos", dedupeKey: rawComplete.dedupeKey + "f" });
+  ok("canAutoApply: FALSE for a built-in pattern — built-ins never auto-apply, only taught+graduated ones can", !T.canAutoApply(builtinEntry, new Set()));
+
+  const incompleteEntry = T.toReviewEntry({ ...rawComplete, matched: "learned_active", dateAssumed: true, dedupeKey: rawComplete.dedupeKey + "g" });
+  ok("canAutoApply: FALSE when extraction is incomplete, even for an active learned pattern", !T.canAutoApply(incompleteEntry, new Set()));
+
+  // dedupe: already-in-S.tx blocks auto-apply of the SAME dedupeKey
+  const dupKey = "dup-check-key-123";
+  T.S.tx.push({ id: "existing-tx", ts: Date.now(), importKey: dupKey, amount: 5000, type: "expense" });
+  const dupEntry = T.toReviewEntry({ ...rawComplete, matched: "learned_active", dedupeKey: dupKey });
+  ok("canAutoApply: FALSE when the dedupeKey already exists in saved transactions", !T.canAutoApply(dupEntry, new Set()));
+
+  // dedupe within ONE sync batch: the seen-set catches a second identical entry before it hits S.tx
+  const batchSeen = new Set();
+  const batchEntry = T.toReviewEntry({ ...rawComplete, matched: "learned_active", dedupeKey: "batch-dup-key" });
+  ok("canAutoApply: first occurrence in a batch is eligible", T.canAutoApply(batchEntry, batchSeen));
+  batchSeen.add(batchEntry.dedupeKey);
+  ok("canAutoApply: a SECOND identical entry in the same batch is blocked by the seen-set", !T.canAutoApply(batchEntry, batchSeen));
+
+  // buildTxRecord: what actually gets written for an auto-applied expense
+  const rec = T.buildTxRecord(resolvedComplete, resolvedComplete.amount, "bank sync");
+  ok("buildTxRecord produces a valid expense record for an auto-applied entry",
+    rec && rec.type === "expense" && rec.amount === 5000 && rec.accountId === resolvedComplete.accountId && rec.source === "bank sync", rec);
 }
 
 /* ---- done ---- */

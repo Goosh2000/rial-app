@@ -78,6 +78,32 @@ I only registered the source account → `transfer_out`".
 `re` is a regex **source string** (compiled case-insensitive). `groups` maps a field name to a
 capture-group index; recognised fields: `amount`, `date`, `time`, `merchant`, `counterparty`,
 `fromAcct`, `toAcct`, `source`. A pattern whose regex fails to compile is skipped, not fatal.
+An `enabled: false` pattern is filtered out before it ever reaches `parseOne`/`parseBatch`
+(`parserCtx()` in index.html) — built-ins are always enabled; `enabled` only ever appears on
+learned patterns.
+
+### Learned patterns (on-device pattern learner, Settings → SMS formats)
+
+A pattern taught via "Teach the parser" (index.html, `PatternLearner` + the Teach screen) has
+everything above PLUS:
+
+```js
+{
+  learned: true,                 // marks it as taught, not built-in — gates Part C entirely
+  enabled: true,                 // disable without deleting, from the pattern list in Settings
+  state: "shadow" | "active",    // shadow: parses, never auto-applies. active: may auto-apply.
+  confirmedCount: 0,             // saved AS-EXTRACTED (type unchanged) in a review → +1; 5 → active
+  rejectedCount: 0,              // saved with its TYPE changed before saving → state resets to shadow, confirmedCount resets to 0
+  createdAt: <epoch ms>,
+}
+```
+
+**Built-in patterns never carry these fields and never auto-apply, full stop** — only a
+`learned: true` pattern that has graduated to `state: "active"` is even eligible, and only for
+a result that also passes `isCompleteExtraction` (amount, non-assumed date, resolved account)
+and clears `AUTO_APPLY_CONFIDENCE_THRESHOLD` (`computeConfidence`, both in index.html) and
+dedupe against `S.tx` (by `importKey`). See `BankSyncClient.syncNow()` for where this gate runs
+on synced messages, and `saveReview()` for where confirm/reject feedback is recorded.
 
 ### The 5 built-in patterns
 

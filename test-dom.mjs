@@ -819,6 +819,50 @@ const setVal = (el, v) => { el.value = v; el.dispatchEvent(new win.Event("input"
   ok("export includes theme schedule state", "themeSchedule" in dump.meta && "themeManual" in dump.meta);
   ok("export includes userThemes", "userThemes" in dump.meta);
 
+  // --- bank-sync Phase 4 Part C: shadow-mode graduation and demotion, driven
+  // through the REAL saveReview() exactly as a live review Save would ---
+  {
+    const runSave = async (patternSetup, entrySetup) => {
+      win.__testResult = undefined;
+      win.eval(`
+        (async () => {
+          S.settings.smsParserPatterns = ${JSON.stringify(patternSetup)};
+          reviewState = ${JSON.stringify(entrySetup)};
+          reviewOpts = { anchor: "#smsReview", source: "sms" };
+          await saveReview("sms");
+          return (await DB.meta("smsParserPatterns", null)).find(p => p.id === "learned_graduation_test");
+        })().then(r => { window.__testResult = r || null; });
+      `);
+      await until(() => win.__testResult !== undefined, "saveReview to finish");
+      return win.__testResult;
+    };
+
+    // Graduation: shadow pattern at 4 confirmations, one more matching,
+    // UNCHANGED-type save pushes it to 5 -> active.
+    const graduated = await runSave(
+      [{ id: "learned_graduation_test", name: "Grad test", learned: true, enabled: true, state: "shadow", confirmedCount: 4, rejectedCount: 0, re: "TEST_GRAD_RE", type: "expense", groups: {} }],
+      [{ raw: "test", matched: "learned_graduation_test", include: true, amount: 5000, amountStr: "5", type: "expense",
+         ymd: "2026-08-31", time: null, dateAssumed: false, merchant: "X", counterparty: null, category: "Other",
+         originalCategory: "Other", fromLast4: null, toLast4: null, fromAccountId: null, toAccountId: null,
+         accountId: "am", dedupeKey: "grad-key-1", rememberRule: false, dup: false, unregistered: false, _originalType: "expense" }]
+    );
+    eq("shadow-mode graduation: confirmedCount reaches 5 on the 5th unchanged-type save", graduated && graduated.confirmedCount, 5);
+    eq("shadow-mode graduation: state flips to 'active' at 5 confirmations", graduated && graduated.state, "active");
+
+    // Demotion: an ACTIVE, graduated pattern; the user changes the TYPE
+    // before saving (income -> expense) -- an explicit rejection signal.
+    const demoted = await runSave(
+      [{ id: "learned_graduation_test", name: "Grad test", learned: true, enabled: true, state: "active", confirmedCount: 5, rejectedCount: 0, re: "TEST_GRAD_RE", type: "income", groups: {} }],
+      [{ raw: "test", matched: "learned_graduation_test", include: true, amount: 5000, amountStr: "5", type: "expense",
+         ymd: "2026-08-31", time: null, dateAssumed: false, merchant: "X", counterparty: null, category: "Other",
+         originalCategory: "Other income", fromLast4: null, toLast4: null, fromAccountId: null, toAccountId: null,
+         accountId: "am", dedupeKey: "grad-key-2", rememberRule: false, dup: false, unregistered: false, _originalType: "income" }]
+    );
+    eq("rejection: state demotes back to 'shadow' after a changed-type save", demoted && demoted.state, "shadow");
+    eq("rejection: confirmedCount resets to 0", demoted && demoted.confirmedCount, 0);
+    eq("rejection: rejectedCount increments", demoted && demoted.rejectedCount, 1);
+  }
+
   ok("no jsdom errors accumulated", errors.length === 0, errors.slice(0, 3).join(" | "));
 
   console.log(`\n${pass} passed, ${fail} failed`);

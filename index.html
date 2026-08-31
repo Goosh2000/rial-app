@@ -1026,7 +1026,9 @@ const BankSyncClient = (() => {
     const blobs = (r.body && r.body.blobs) || [];
 
     const toAck = [];
-    const newEntries = [];
+    const newEntries = [];        // raw entries headed for the manual review queue
+    const autoApplied = [];       // transaction records written straight to the store this sync
+    const dedupeSeen = new Set(); // guards two identical entries decrypted in ONE batch from both auto-applying
     for (const row of blobs){
       try {
         const rawAesKey = new Uint8Array(await crypto.subtle.decrypt({ name:"RSA-OAEP" }, privateKey, base64ToBytes(row.wrappedKey)));
@@ -1034,13 +1036,37 @@ const BankSyncClient = (() => {
         const plainBytes = new Uint8Array(await crypto.subtle.decrypt(
           { name:"AES-GCM", iv: base64ToBytes(row.iv) }, aesKey, base64ToBytes(row.ciphertext)
         ));
-        const text = new TextDecoder().decode(plainBytes);
+        // The relay hands us a raw RFC822 email, not a bare SMS — strip MIME
+        // structure/headers down to the readable body before the parser ever
+        // sees it (see mime.js; this is what Part A of bank-sync Phase 4 fixed).
+        const rawEmail = new TextDecoder().decode(plainBytes);
+        const mime = MimeDecoder.decode(rawEmail);
+        const text = mime.text;
+        const sentAt = mime.date ? Date.parse(mime.date) : NaN;
+        const ctx = { ...parserCtx(), now: Number.isFinite(sentAt) ? sentAt : parserCtx().now };
         let parsed = [];
-        try { parsed = SmsParser.parseBatch(text, parserCtx()); } catch(_){}
+        try { parsed = SmsParser.parseBatch(text, ctx); } catch(_){}
         if (!parsed.length && text.trim()){
-          try { const one = SmsParser.parseOne(text.trim(), parserCtx()); if (one) parsed = [one]; } catch(_){}
+          try { const one = SmsParser.parseOne(text.trim(), ctx); if (one) parsed = [one]; } catch(_){}
         }
-        newEntries.push(...parsed);
+        for (const p of parsed) p.messageId = mime.messageId || null;   // kept for future dedupe use, never displayed
+
+        // Part C (shadow mode): only a graduated, learned pattern's complete,
+        // deduped, high-confidence result skips review. Everything else —
+        // including every built-in pattern's result, unconditionally —
+        // still lands in the manual review queue exactly as before.
+        for (const p of parsed){
+          const resolved = toReviewEntry(p);
+          const rec = canAutoApply(resolved, dedupeSeen) ? buildTxRecord(resolved, resolved.amount, "bank sync") : null;
+          if (rec){
+            rec.autoApplied = true;
+            await DB.put("transactions", rec);
+            dedupeSeen.add(resolved.dedupeKey);
+            autoApplied.push(rec);
+          } else {
+            newEntries.push(p);
+          }
+        }
         toAck.push(row.id);   // decrypted OK — eligible to ack, but only after the persist step below succeeds
       } catch(e){
         // this ONE blob failed to decrypt/decode — skip it, never ack it, and
@@ -1070,7 +1096,7 @@ const BankSyncClient = (() => {
     }
 
     await patchState({ lastSyncAt: Date.now(), lastPendingCount: blobs.length - (persisted ? toAck.length : 0) });
-    return { ok:true, newCount: newEntries.length, stuckCount: blobs.length - (persisted ? toAck.length : 0) };
+    return { ok:true, newCount: newEntries.length, autoAppliedCount: autoApplied.length, stuckCount: blobs.length - (persisted ? toAck.length : 0) };
   }
 
   return { DEFAULT_WORKER_URL, getState, register, regenerateKeys, rotateToken, disableEverything, syncNow };
@@ -1580,8 +1606,8 @@ function txRowHTML(t){
   const acct = t.accountId ? accountById(t.accountId) : null;
   return `<div class="tx" data-tx="${t.id}">
     <div class="ic">${t.type==="transfer_out"?svgIcon("arrowUR"):t.type==="transfer_in"?svgIcon("arrowDL"):c.icon}</div>
-    <div class="mid"><div class="t1">${esc(t.note || t.counterparty || t.category || "—")}</div>
-      <div class="t2">${esc(t.type==="transfer_out"||t.type==="transfer_in"?(t.counterparty?"to/from "+t.counterparty:"person"):t.category||"")}${acct&&S.accounts.length>1?" · "+esc(acct.label):""}${t.source&&t.source!=="manual"?" · "+t.source:""}</div></div>
+    <div class="mid"><div class="t1">${esc(t.note || t.counterparty || t.category || "—")}${t.autoApplied?` <span class="tiny" style="padding:1px 5px;border-radius:8px;background:var(--accent);color:#fff;vertical-align:middle">Auto</span>`:""}</div>
+      <div class="t2">${esc(t.type==="transfer_out"||t.type==="transfer_in"?(t.counterparty?"to/from "+t.counterparty:"person"):t.category||"")}${acct&&S.accounts.length>1?" · "+esc(acct.label):""}${t.source&&t.source!=="manual"?" · "+t.source:""}${t.autoApplied?` · <button class="btn sm ghost" data-tx-undo="${t.id}" style="padding:1px 7px">Undo</button>`:""}</div></div>
     <div class="amt mono ${isIn?"pos":""}">${isIn?"+":""}${U.fmt(t.amount)}</div>
   </div>`;
 }
@@ -1944,13 +1970,19 @@ function wireScreen(){
     txFilter.cat = b.dataset.fcat || null; render();
   }));
 
+  document.querySelectorAll("[data-tx-undo]").forEach(b => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await DB.del("transactions", b.dataset.txUndo);
+    await refresh(); render();
+    toast("Auto-applied entry undone");
+  }));
   document.querySelectorAll("[data-tx]").forEach(el => {
-    let timer;
-    const openEdit = () => editTx(el.dataset.tx);
-    el.addEventListener("touchstart", () => { timer = setTimeout(openEdit, 500); }, {passive:true});
+    let timer, touchedUndo = false;
+    const openEdit = () => { if (touchedUndo) return; editTx(el.dataset.tx); };
+    el.addEventListener("touchstart", (e) => { touchedUndo = !!e.target.closest("[data-tx-undo]"); timer = setTimeout(openEdit, 500); }, {passive:true});
     el.addEventListener("touchend", () => clearTimeout(timer));
     el.addEventListener("touchmove", () => clearTimeout(timer));
-    el.addEventListener("click", openEdit);
+    el.addEventListener("click", (e) => { if (e.target.closest("[data-tx-undo]")) return; openEdit(); });
   });
 
   // Plan sub-tabs + toggles
@@ -2003,6 +2035,7 @@ function handleAct(act, d){
     "export-ics": exportICS,
     "open-wrapped": () => openWrapped(prevMonthKey()),
     "open-manual": () => openOverlay("manual"),
+    "open-import-log": () => openOverlay("importLog"),
     "edit-cats": () => openOverlay("cats"),
     "edit-sms": () => openOverlay("smsPatterns"),
     "edit-accounts": () => openOverlay("accounts"),
@@ -2876,6 +2909,183 @@ async function csvCommit(){
   await refresh(); closeFull(); toast(`Imported ${chosen.length} transactions`); render();
 }
 
+/* ============ [R2] MIME DECODER (from mime.js) ======================= */
+/* MIME:START */
+/* MIME decoder — generated from mime.js by build-mime.js. Edit mime.js, then: node build-mime.js */
+const MimeDecoder = (() => {
+
+  function splitHeaders(raw) {
+    const s = String(raw == null ? "" : raw);
+    const idx = s.search(/\r?\n\r?\n/);
+    if (idx === -1) return { headerBlock: s, body: "" };
+    const m = s.slice(idx).match(/^\r?\n\r?\n/);
+    return { headerBlock: s.slice(0, idx), body: s.slice(idx + m[0].length) };
+  }
+
+  /* RFC 2822 header folding: a continuation line starts with space/tab */
+  function unfoldHeaders(headerBlock) {
+    return String(headerBlock || "").replace(/\r\n/g, "\n").replace(/\n[ \t]+/g, " ");
+  }
+
+  function parseHeaders(headerBlock) {
+    const lines = unfoldHeaders(headerBlock).split("\n").filter(Boolean);
+    const headers = {};
+    for (const line of lines) {
+      const m = line.match(/^([!-9;-~]+):\s?(.*)$/);
+      if (!m) continue;
+      const name = m[1].toLowerCase();
+      headers[name] = headers[name] != null ? headers[name] + ", " + m[2] : m[2];
+    }
+    return headers;
+  }
+
+  function parseContentType(value) {
+    if (!value) return { type: "text/plain", params: {} };
+    const segs = String(value).split(";").map((s) => s.trim()).filter(Boolean);
+    const type = (segs[0] || "text/plain").toLowerCase();
+    const params = {};
+    for (let i = 1; i < segs.length; i++) {
+      const m = segs[i].match(/^([a-zA-Z0-9-]+)\s*=\s*(?:"([^"]*)"|(\S+))$/);
+      if (m) params[m[1].toLowerCase()] = (m[2] != null ? m[2] : m[3]).replace(/;$/, "");
+    }
+    return { type, params };
+  }
+
+  function bytesToText(bytes, charset) {
+    const cs = String(charset || "utf-8").toLowerCase().replace(/"/g, "").trim();
+    if (["iso-8859-1", "latin1", "windows-1252", "us-ascii", "ascii"].includes(cs)) {
+      let s = "";
+      for (const b of bytes) s += String.fromCharCode(b);
+      return s;
+    }
+    try { return new TextDecoder("utf-8").decode(new Uint8Array(bytes)); }
+    catch { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return s; }
+  }
+
+  /* The caller already has this as a JS string (the whole raw email went
+   * through one outer UTF-8 decode of the ciphertext-derived bytes). Both
+   * quoted-printable and base64's ENCODED form are pure 7-bit ASCII, so that
+   * outer decode is lossless for them — we just need to rebuild the ORIGINAL
+   * byte sequence from the encoded text and decode it with the part's own
+   * declared charset. */
+  function decodeQuotedPrintable(text, charset) {
+    const s = String(text || "").replace(/=\r?\n/g, ""); // soft line breaks
+    const bytes = [];
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "=" && /^[0-9A-Fa-f]{2}/.test(s.slice(i + 1, i + 3))) {
+        bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
+        i += 2;
+      } else {
+        bytes.push(s.charCodeAt(i) & 0xff);
+      }
+    }
+    return bytesToText(bytes, charset);
+  }
+  function decodeBase64(text, charset) {
+    const clean = String(text || "").replace(/[^A-Za-z0-9+/=]/g, "");
+    if (!clean) return "";
+    let binary;
+    try { binary = atob(clean); } catch { return ""; }
+    const bytes = new Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytesToText(bytes, charset);
+  }
+
+  function splitMultipart(body, boundary) {
+    const marker = "--" + boundary;
+    const segments = String(body || "").split(marker);
+    const parts = [];
+    for (let i = 1; i < segments.length; i++) {
+      let seg = segments[i];
+      if (seg.slice(0, 2) === "--") break;              // final boundary reached
+      seg = seg.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+      if (seg.trim()) parts.push(seg);
+    }
+    return parts;
+  }
+
+  /* Returns every text/plain or text/html LEAF found anywhere in the tree,
+   * in document order. Non-text leaves (images, PDFs, ...) are dropped
+   * entirely — never decoded, never returned. */
+  function walkPart(headers, body) {
+    const ct = parseContentType(headers["content-type"]);
+    if (ct.type.indexOf("multipart/") === 0 && ct.params.boundary) {
+      let leaves = [];
+      for (const raw of splitMultipart(body, ct.params.boundary)) {
+        const { headerBlock, body: partBody } = splitHeaders(raw);
+        leaves = leaves.concat(walkPart(parseHeaders(headerBlock), partBody));
+      }
+      return leaves;
+    }
+    if (ct.type.indexOf("text/") !== 0) return [];        // not text — ignore entirely
+    const cte = String(headers["content-transfer-encoding"] || "7bit").toLowerCase().trim();
+    let text;
+    if (cte === "quoted-printable") text = decodeQuotedPrintable(body, ct.params.charset);
+    else if (cte === "base64") text = decodeBase64(body, ct.params.charset);
+    else text = body;                                     // 7bit/8bit/binary — already text
+    return [{ type: ct.type, text }];
+  }
+
+  function selectBestPart(leaves) {
+    return leaves.find((l) => l.type === "text/plain")
+        || leaves.find((l) => l.type === "text/html")
+        || leaves[0] || null;
+  }
+
+  const NAMED_ENTITIES = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+    rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“",
+    mdash: "—", ndash: "–", hellip: "…", copy: "©",
+  };
+  function decodeEntities(s) {
+    return String(s || "").replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, code) => {
+      if (code[0] === "#") {
+        const isHex = code[1] === "x" || code[1] === "X";
+        const cp = isHex ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+        return Number.isFinite(cp) ? String.fromCodePoint(cp) : m;
+      }
+      return NAMED_ENTITIES[code] !== undefined ? NAMED_ENTITIES[code] : m;
+    });
+  }
+
+  function htmlToText(html) {
+    let s = String(html || "");
+    s = s.replace(/<!--[\s\S]*?-->/g, "");
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, "");
+    s = s.replace(/<\/(tr|p|div|li|h[1-6])>/gi, "\n");
+    s = s.replace(/<br\s*\/?>/gi, "\n");
+    s = s.replace(/<\/td>/gi, "\t");
+    s = s.replace(/<[^>]+>/g, "");
+    s = decodeEntities(s);
+    s = s.replace(/\r\n/g, "\n").replace(/[ \t]+/g, (m) => (m.includes("\t") ? "\t" : " "));
+    s = s.split("\n").map((l) => l.replace(/^[ \t]+|[ \t]+$/g, "")).filter((l) => l.length).join("\n");
+    return s.trim();
+  }
+
+  function decode(raw) {
+    const s = String(raw == null ? "" : raw);
+    const { headerBlock, body } = splitHeaders(s);
+    const headers = parseHeaders(headerBlock);
+    if (!Object.keys(headers).length) {
+      // No line matched a "Header: value" shape at all — this isn't an
+      // RFC822 message (no blank-line envelope was found either, since
+      // splitHeaders would then have put everything in headerBlock). There's
+      // no envelope to strip, so it's already just text.
+      return { text: s.replace(/\r\n/g, "\n").trim(), date: null, messageId: null };
+    }
+    const leaves = walkPart(headers, body).filter((l) => l.type === "text/plain" || l.type === "text/html");
+    const chosen = selectBestPart(leaves);
+    let text;
+    if (chosen) text = chosen.type === "text/html" ? htmlToText(chosen.text) : chosen.text.replace(/\r\n/g, "\n").trim();
+    else text = String(body || "").replace(/\r\n/g, "\n").trim();   // no recognisable MIME structure at all
+    return { text, date: headers["date"] || null, messageId: headers["message-id"] || null };
+  }
+
+  return { decode, htmlToText, decodeQuotedPrintable, decodeBase64, parseContentType, splitHeaders, parseHeaders };
+})();
+/* MIME:END */
+
 /* ============ [S] SMS PARSER (from parser.js) + review flow ========= */
 /* PARSER:START */
 /* SMS parser — generated from parser.js by build-parser.js. Edit parser.js, then: node build-parser.js */
@@ -3111,6 +3321,119 @@ const SmsParser = (() => {
 })();
 /* PARSER:END */
 
+/* ---- [S2] PATTERN LEARNER (bank-sync Phase 4, Part B) ---------------
+ * Turns the user's field selections on one cleaned message into a
+ * candidate SmsParser pattern: literal text around each selected field
+ * becomes the regex anchor (escaped, whitespace generalised to \s+); the
+ * selected span itself becomes a generalised capture group appropriate to
+ * its field. Runs entirely on-device — nothing here ever transmits text
+ * or a learned pattern anywhere. See Settings > SMS formats for where
+ * learned patterns land, and Part C (shadow mode) for how they earn
+ * auto-apply trust. */
+const PatternLearner = (() => {
+  const FIELD_LABELS = {
+    amount: "amount", date: "date", merchant: "merchant", source: "source",
+    counterparty: "counterparty", fromAcct: "account", toAcct: "account",
+  };
+
+  function tokenize(text) {
+    const toks = [];
+    const re = /\S+/g;
+    let m;
+    while ((m = re.exec(text))) toks.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+    return toks;
+  }
+
+  function escapeAnchor(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  }
+
+  /* hasTrailingAnchor: false only for the very last field when there is no
+   * literal text after it at all (its selection ends exactly at the line's
+   * end). A non-greedy free-text group with nothing after it to anchor
+   * against would otherwise match the bare minimum — a single character —
+   * instead of running to the end of the line. */
+  function generalizeField(field, sample, hasTrailingAnchor) {
+    const s = String(sample || "").trim();
+    if (field === "amount") return "([\\d,]+\\.\\d{1,3})";
+    if (field === "date") return /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s) ? "(\\d{1,2}\\/\\d{1,2}\\/\\d{4})" : "([\\d\\/\\-.]+)";
+    if (field === "fromAcct" || field === "toAcct") return "([0-9X#x*]+)";
+    return hasTrailingAnchor === false ? "(.+)" : "(.+?)"; // merchant / counterparty / source — free-text name runs
+  }
+
+  /* selections: [{field, start, end}] — character offsets into `text`.
+   * Clips the pattern to the LINE spanning the selections (not the whole
+   * message) so a multi-row report doesn't produce one giant, unusable
+   * regex — see previewMatches for how a repeating shape still surfaces. */
+  function buildPattern(text, selections) {
+    const sorted = selections.slice().sort((a, b) => a.start - b.start);
+    const firstStart = sorted[0].start, lastEnd = sorted[sorted.length - 1].end;
+    const workStart = text.lastIndexOf("\n", firstStart - 1) + 1;
+    const nlAfter = text.indexOf("\n", lastEnd);
+    const workEnd = nlAfter === -1 ? text.length : nlAfter;
+
+    let re = "", cursor = workStart, groupIndex = 0;
+    const groups = {};
+    for (let i = 0; i < sorted.length; i++) {
+      const sel = sorted[i];
+      if (sel.start > cursor) re += escapeAnchor(text.slice(cursor, sel.start));
+      groupIndex++;
+      groups[sel.field] = groupIndex;
+      const hasTrailingAnchor = i < sorted.length - 1 || sel.end < workEnd;
+      re += generalizeField(sel.field, text.slice(sel.start, sel.end), hasTrailingAnchor);
+      cursor = sel.end;
+    }
+    if (cursor < workEnd) re += escapeAnchor(text.slice(cursor, workEnd));
+    return { re, groups, workStart, workEnd };
+  }
+
+  function truncateForDisplay(s, max) {
+    s = s.trim();
+    return s.length <= max ? s : "…" + s.slice(-(max - 1));
+  }
+
+  function describePlainly(text, selections) {
+    const sorted = selections.slice().sort((a, b) => a.start - b.start);
+    const { workStart, workEnd } = buildPattern(text, selections);
+    const lines = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const sel = sorted[i];
+      const before = text.slice(i === 0 ? workStart : sorted[i - 1].end, sel.start).trim();
+      const after = text.slice(sel.end, i === sorted.length - 1 ? workEnd : sorted[i + 1].start).trim();
+      const label = FIELD_LABELS[sel.field] || sel.field;
+      let desc = "The " + label + " ";
+      if (before && after) desc += `comes after "${truncateForDisplay(before, 24)}" and before "${truncateForDisplay(after, 24)}"`;
+      else if (before) desc += `comes after "${truncateForDisplay(before, 24)}"`;
+      else if (after) desc += `comes before "${truncateForDisplay(after, 24)}"`;
+      else desc += "is the entire line";
+      lines.push(desc + ".");
+    }
+    return lines;
+  }
+
+  /* Runs the generated regex (global) against the WHOLE cleaned text, not
+   * just the taught line — a repeating shape (a multi-row report) surfaces
+   * for free as more than one match, with no separate row-similarity
+   * detector needed. Reuses SmsParser.parseOne per match so every existing
+   * rule (money-as-integer-baisa, day-first dates, transfer resolution,
+   * categorisation) applies identically to a learned pattern's results. */
+  function previewMatches(text, pattern, ctx) {
+    let global;
+    try { global = new RegExp(pattern.re, "gi"); } catch { return []; }
+    const rows = [];
+    let m;
+    while ((m = global.exec(text)) !== null) {
+      const entry = SmsParser.parseOne(m[0], { ...ctx, patterns: [pattern] });
+      if (entry) rows.push(entry);
+      if (m.index === global.lastIndex) global.lastIndex++;
+      if (rows.length >= 50) break;
+    }
+    return rows;
+  }
+
+  return { tokenize, escapeAnchor, generalizeField, buildPattern, describePlainly, previewMatches, FIELD_LABELS };
+})();
+
 const TYPE_LABELS = {
   income: "Income", expense: "Expense", transfer_internal: "Moved (internal)",
   transfer_out: "Sent to person", transfer_in: "Received from person", review: "Needs a type",
@@ -3119,9 +3442,49 @@ function parserCtx(){
   return {
     accountLast4: accountLast4Set(),
     rules: S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES,
-    patterns: S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS,
+    patterns: (S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS).filter((p) => p.enabled !== false),
     now: Date.now(),
   };
+}
+function findPattern(id){
+  return (S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS).find((p) => p.id === id) || null;
+}
+
+/* ---- Shadow mode / auto-apply (bank-sync Phase 4, Part C) -----------
+ * A pattern must EARN the right to auto-apply — built-in patterns never
+ * get it (they always land in manual review, exactly as before this
+ * phase); only a LEARNED pattern that has graduated out of shadow mode
+ * (5 explicit confirmations, see saveReview) is even eligible, and even
+ * then only for a complete, unambiguous, deduped, high-confidence result.
+ * Confidence is a plain heuristic, not a statistical model — it exists to
+ * catch the "matched, but something about this extraction looks thin"
+ * case, on top of the harder gates below. */
+const AUTO_APPLY_CONFIDENCE_THRESHOLD = 0.7;
+function computeConfidence(entry, pattern){
+  if (!entry || entry.type === "review" || !entry.matched || entry.matched === "review") return 0;
+  let score = 1;
+  if (entry.dateAssumed) score -= 0.15;
+  if (!entry.amount || entry.amount <= 0) score -= 0.5;
+  if (pattern && pattern.learned) score -= 0.1;
+  const needsAName = entry.type === "expense" || entry.type === "transfer_out" || entry.type === "transfer_in";
+  if (needsAName && !entry.merchant && !entry.counterparty) score -= 0.2;
+  return Math.max(0, Math.min(1, score));
+}
+function isCompleteExtraction(entry){
+  if (!entry || !entry.amount || entry.amount <= 0) return false;
+  if (!entry.type || entry.type === "review") return false;
+  if (entry.dateAssumed) return false;
+  if (entry.type === "transfer_internal") return !!(entry.fromAccountId && entry.toAccountId);
+  return !entry.unregistered;
+}
+/* dedupeSeen: a Set the caller mutates across one sync batch, so two
+ * identical entries decrypted in the SAME batch can't both auto-apply. */
+function canAutoApply(entry, dedupeSeen){
+  const pattern = findPattern(entry.matched);
+  if (!pattern || !pattern.learned || pattern.state !== "active" || pattern.enabled === false) return false;
+  if (!isCompleteExtraction(entry)) return false;
+  if (dedupeSeen.has(entry.dedupeKey) || S.tx.some((t) => t.importKey === entry.dedupeKey)) return false;
+  return computeConfidence(entry, pattern) >= AUTO_APPLY_CONFIDENCE_THRESHOLD;
 }
 function catNameFor(slug, type){
   if (!slug){
@@ -3133,6 +3496,7 @@ function catNameFor(slug, type){
 }
 
 let reviewState = [];      // RVEntry[]
+let reviewOpts = null;     // {anchor, source} of the currently open review screen — for re-rendering after teaching
 function toReviewEntry(p){
   const fromAcc = accountByLast4(p.fromLast4);
   const toAcc = accountByLast4(p.toLast4);
@@ -3149,6 +3513,7 @@ function toReviewEntry(p){
     accountId: (fromAcc && fromAcc.id) || primaryId(),
     dedupeKey: p.dedupeKey, rememberRule: false, dup: false,
     unregistered: (!!p.fromLast4 && !fromAcc) || (!!p.toLast4 && !toAcc),
+    _originalType: p.type,   // snapshot for shadow-mode confirm/reject feedback in saveReview — never shown in the UI
   };
   return e;
 }
@@ -3209,8 +3574,10 @@ function wireSMS(){
 }
 
 /* ---- bank-sync review (Phase 3A) — decrypted messages land here, exactly
- * like a pasted SMS batch, until they're reviewed and saved. Nothing from
- * automatic import is ever auto-applied. ---- */
+ * like a pasted SMS batch, until they're reviewed and saved. Only a
+ * graduated learned pattern's complete, high-confidence results ever skip
+ * this screen (Part C) — everything else, including every built-in
+ * pattern's result, always lands here. ---- */
 function bankSyncReviewHTML(){
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
@@ -3229,12 +3596,45 @@ async function wireBankSyncReview(){
   }
   openReview(pending, { anchor: "#bankSyncReviewAnchor", source: "bank sync" });
 }
-function showSyncReadyBanner(n){
+
+/* ---- import log (Part C): every auto-applied transaction, one-tap undo -- */
+function importLogHTML(){
+  const log = S.tx.filter((t) => t.autoApplied).sort((a, b) => b.ts - a.ts);
+  return `
+  <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
+  <div class="pagehead"><h1>Import log</h1></div>
+  <div class="card"><p class="tiny faint">Every transaction automatic import applied on its own, without a review —
+    only ever from a pattern you taught and confirmed correct at least 5 times. Undo any of them with one tap;
+    your other transactions are never touched.</p></div>
+  ${log.length === 0 ? `<div class="card"><p class="tiny faint">Nothing has been auto-applied yet.</p></div>` :
+    `<div class="card">${log.map((t) => `<div class="row between" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div class="tiny">${esc(t.note || t.counterparty || t.category || "—")}</div>
+        <div class="tiny faint">${new Date(t.ts).toLocaleString("en-GB")}</div>
+      </div>
+      <div class="row" style="gap:8px;align-items:center">
+        <span class="mono tiny">${U.fmt(t.amount)}</span>
+        <button class="btn sm ghost" data-log-undo="${t.id}">Undo</button>
+      </div>
+    </div>`).join("")}</div>`}
+  `;
+}
+function wireImportLog(){
+  FULL.querySelectorAll("[data-log-undo]").forEach((b) => b.addEventListener("click", async () => {
+    await DB.del("transactions", b.dataset.logUndo);
+    await refresh(); render(); openOverlay("importLog");
+    toast("Auto-applied entry undone");
+  }));
+}
+function showSyncReadyBanner(n, autoApplied){
+  const bits = [];
+  if (n) bits.push(`${n} message${n>1?"s":""} to review`);
+  if (autoApplied) bits.push(`${autoApplied} auto-applied`);
   showBanner("bankSyncReady", {
     tone: "info",
-    html: `<b>${n} new message${n>1?"s":""} from automatic import.</b>`,
-    sub: "Decrypted on this device — review before anything is saved.",
-    actions: [{ id: "review", label: "Review", primary: true, run: () => { closeBanner("bankSyncReady"); openOverlay("bankSyncReview"); } }],
+    html: `<b>Automatic import: ${bits.join(", ")}.</b>`,
+    sub: n ? "Decrypted on this device — review before anything is saved." : "Auto-applied entries are marked and one-tap undoable in Transactions.",
+    actions: n ? [{ id: "review", label: "Review", primary: true, run: () => { closeBanner("bankSyncReady"); openOverlay("bankSyncReview"); } }] : [],
   });
 }
 /* Silent on every ordinary non-event (not registered, offline, nothing new) —
@@ -3243,7 +3643,7 @@ function showSyncReadyBanner(n){
 async function autoSyncBankMessages(){
   try {
     const r = await BankSyncClient.syncNow();
-    if (r.ok && r.newCount){ await refresh(); showSyncReadyBanner(r.newCount); }
+    if (r.ok && (r.newCount || r.autoAppliedCount)){ await refresh(); render(); showSyncReadyBanner(r.newCount, r.autoAppliedCount); }
   } catch(_){ /* sync is an enhancement — never let it surface as an app error */ }
 }
 
@@ -3258,7 +3658,7 @@ function reviewRowHTML(e, i){
       <div style="flex:1">
         <div class="tiny faint" style="margin-bottom:5px">${esc((e.raw||"").slice(0,110))}${(e.raw||"").length>110?"…":""}
           ${e.matched && e.matched!=="review"?` · <i>${esc(e.matched)}</i>`:""}${e.dup?` · <b style="color:var(--warn)">duplicate</b>`:""}</div>
-        ${e.type==="review"?`<div class="tiny" style="color:var(--warn);margin-bottom:4px">Unrecognised — pick a type and check the details.</div>`:""}
+        ${e.type==="review"?`<div class="tiny" style="color:var(--warn);margin-bottom:4px">Unrecognised — pick a type and check the details, or <button class="btn sm ghost" data-teach="${i}" style="padding:2px 8px">teach the parser</button></div>`:""}
         ${isMove?`<div class="tiny" style="color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:5px">${svgIcon("swap")} Between your own accounts — will NOT count as spending.</div>`:""}
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <input data-rv="${i}" data-f="amountStr" inputmode="decimal" value="${esc(e.amountStr)}" placeholder="OMR" ${inp} style="width:88px;background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:7px"/>
@@ -3316,41 +3716,69 @@ function renderReviewCard(anchor, source){
 function openReview(parsed, opts){
   reviewState = parsed.map(toReviewEntry);
   markDuplicates(reviewState);
+  reviewOpts = opts;   // remembered so the teach flow can re-render this same screen afterward
   renderReviewCard(opts.anchor, opts.source);
+}
+/* Builds the transactions-store record for one reviewed/resolved entry, or
+ * null if it's not (yet) savable. Shared by the manual review Save button
+ * and the auto-apply path in BankSyncClient.syncNow() — both must build an
+ * identical record from an identically-shaped resolved entry. */
+function buildTxRecord(e, amountBaisa, source){
+  const ymd = /^\d{4}-\d{2}-\d{2}$/.test(e.ymd) ? e.ymd : U.ymd();
+  const ts = e.time ? U.parseYMD(ymd) + hmsToMs(e.time) - 12*3600000 : U.parseYMD(ymd) + 43199000;
+  const base = { id: U.uid(), ts, month: ymd.slice(0,7), amount: amountBaisa, source, importKey: e.dedupeKey };
+  if (e.type === "transfer_internal"){
+    if (!e.fromAccountId || !e.toAccountId || e.fromAccountId === e.toAccountId) return null;
+    return { ...base, type: "transfer_internal", fromAccountId: e.fromAccountId, toAccountId: e.toAccountId,
+      note: (e.merchant || e.counterparty || "").trim() };
+  }
+  if (e.type === "transfer_out" || e.type === "transfer_in"){
+    return { ...base, type: e.type, accountId: e.accountId || primaryId(),
+      counterparty: (e.counterparty || "").trim(), category: e.type === "transfer_in" ? "Other income" : "Other",
+      note: (e.counterparty || "").trim() };
+  }
+  return { ...base, type: e.type, accountId: e.accountId || primaryId(),
+    category: e.type === "income" ? (e.category || "Other income") : (e.category || "Other"),
+    note: (e.merchant || "").trim() };
 }
 async function saveReview(source){
   let n = 0; const learnedRules = [];
+  const patterns = (S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS).slice();
+  let patternsChanged = false;
   for (const e of reviewState){
     if (!e.include || e.type === "review") continue;
     const amt = U.toBaisa(e.amountStr); if (amt <= 0) continue;
-    const ymd = /^\d{4}-\d{2}-\d{2}$/.test(e.ymd) ? e.ymd : U.ymd();
-    const ts = e.time ? U.parseYMD(ymd) + hmsToMs(e.time) - 12*3600000 : U.parseYMD(ymd) + 43199000;
-    const base = { id: U.uid(), ts, month: ymd.slice(0,7), amount: amt, source, importKey: e.dedupeKey };
-    let rec;
-    if (e.type === "transfer_internal"){
-      if (!e.fromAccountId || !e.toAccountId || e.fromAccountId === e.toAccountId) continue;
-      rec = { ...base, type: "transfer_internal", fromAccountId: e.fromAccountId, toAccountId: e.toAccountId,
-        note: (e.merchant || e.counterparty || "").trim() };
-    } else if (e.type === "transfer_out" || e.type === "transfer_in"){
-      rec = { ...base, type: e.type, accountId: e.accountId || primaryId(),
-        counterparty: (e.counterparty || "").trim(), category: e.type==="transfer_in"?"Other income":"Other",
-        note: (e.counterparty || "").trim() };
-    } else {
-      rec = { ...base, type: e.type, accountId: e.accountId || primaryId(),
-        category: e.type === "income" ? (e.category || "Other income") : (e.category || "Other"),
-        note: (e.merchant || "").trim() };
-      if (e.type === "expense" && e.rememberRule && e.merchant && e.category){
-        learnedRules.push({ match: (e.merchant || "").split(" ")[0].toUpperCase(), category: (e.category || "").toLowerCase() });
-      }
-    }
+    const rec = buildTxRecord(e, amt, source);
+    if (!rec) continue;
     await DB.put("transactions", rec);
     n++;
+    if (e.type === "expense" && e.rememberRule && e.merchant && e.category){
+      learnedRules.push({ match: (e.merchant || "").split(" ")[0].toUpperCase(), category: (e.category || "").toLowerCase() });
+    }
+    // Shadow mode (Part C): saving an entry AS EXTRACTED is an explicit
+    // confirmation; changing its type before saving is an explicit
+    // rejection. Only entries the user actually saves carry a signal —
+    // one left unchecked (e.g. a duplicate) says nothing about the pattern.
+    if (e.matched){
+      const p = patterns.find((x) => x.id === e.matched);
+      if (p && p.learned){
+        patternsChanged = true;
+        if (e.type === e._originalType){
+          p.confirmedCount = (p.confirmedCount || 0) + 1;
+          if (p.state !== "active" && p.confirmedCount >= 5) p.state = "active";
+        } else {
+          p.rejectedCount = (p.rejectedCount || 0) + 1;
+          p.state = "shadow"; p.confirmedCount = 0;
+        }
+      }
+    }
   }
   if (learnedRules.length){
     const rules = (S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES).slice();
     for (const r of learnedRules) if (!rules.some(x => x.match === r.match)) rules.unshift(r);
     await DB.setMeta("merchantRules", rules);
   }
+  if (patternsChanged) await DB.setMeta("smsParserPatterns", patterns);
   // Reviewing bank-sync entries clears the persisted pending queue — whether
   // saved or left unchecked, they're resolved once this review is submitted,
   // same as an unchecked row from a pasted SMS batch never comes back.
@@ -3363,6 +3791,225 @@ async function saveReview(source){
   render();
 }
 function hmsToMs(hms){ const [h,m,s] = String(hms).split(":").map(Number); return (h*3600 + m*60 + (s||0)) * 1000; }
+
+/* ---- Teach the parser (bank-sync Phase 4, Part B) --------------------
+ * Turns one unrecognised review row into a learned pattern: pick what
+ * kind of message this is (a fixed choice, exactly like a built-in
+ * pattern's `type`), tap-select the text spans that ARE each field, then
+ * preview before saving. New patterns save into the same
+ * `smsParserPatterns` store as the built-ins, starting in shadow mode
+ * (Part C) — everything here runs on-device; nothing is ever sent
+ * anywhere. */
+const TEACH_TYPE_FIELDS = {
+  expense: { patternType: "expense", label: "Money out (card / purchase)", defaultName: "Card purchase", fields: [
+    { key: "amount", label: "Amount", required: true },
+    { key: "date", label: "Date", required: false },
+    { key: "merchant", label: "Merchant", required: false },
+    { key: "fromAcct", label: "Account last 4", required: false },
+  ] },
+  income: { patternType: "income", label: "Money in (salary / credit)", defaultName: "Income credit", fields: [
+    { key: "amount", label: "Amount", required: true },
+    { key: "date", label: "Date", required: false },
+    { key: "source", label: "Source / description", required: false },
+  ] },
+  transfer_out: { patternType: "transfer_out", label: "Sent to a person", defaultName: "Sent to person", fields: [
+    { key: "amount", label: "Amount", required: true },
+    { key: "date", label: "Date", required: false },
+    { key: "counterparty", label: "Sent to (name)", required: true },
+    { key: "fromAcct", label: "Your account last 4", required: false },
+  ] },
+  transfer_in: { patternType: "transfer_in", label: "Received from a person", defaultName: "Received from person", fields: [
+    { key: "amount", label: "Amount", required: true },
+    { key: "date", label: "Date", required: false },
+    { key: "counterparty", label: "Received from (name)", required: true },
+  ] },
+  transfer_internal: { patternType: "transfer_auto", label: "Between my own accounts", defaultName: "Internal transfer", fields: [
+    { key: "amount", label: "Amount", required: true },
+    { key: "date", label: "Date", required: false },
+    { key: "fromAcct", label: "From account last 4", required: true },
+    { key: "toAcct", label: "To account last 4", required: true },
+  ] },
+};
+const TEACH_FIELD_COLORS = {
+  amount: "#3ddc91", date: "#5bd6ff", merchant: "#a97bff", source: "#a97bff", counterparty: "#a97bff",
+  fromAcct: "#ffc266", toAcct: "#ff9f45",
+};
+
+let teachState = null;
+function openTeach(rowIndex){
+  const e = reviewState[rowIndex];
+  if (!e) return;
+  teachState = { rowIndex, text: e.raw || "", msgType: null, selections: [], activeField: null, pendingStart: null, patternId: "learned_" + U.uid(), preview: null };
+  renderTeach();
+}
+function renderTeach(){ openFull(teachHTML()); wireTeach(); }
+
+function returnToReview(){
+  if (!reviewOpts){ closeFull(); return; }
+  if (reviewOpts.source === "bank sync"){ openOverlay("bankSyncReview"); return; }
+  if (reviewOpts.source === "ocr"){ openFull(ocrHTML()); wireOCR(); }
+  else { openFull(smsHTML()); wireSMS(); }
+  renderReviewCard(reviewOpts.anchor, reviewOpts.source);
+}
+
+/* Replaces the ONE unrecognised row being taught with 1-or-more freshly
+ * parsed rows (more than one when the message turned out to be a
+ * multi-row report). For a bank-sync review this has to go through the
+ * persisted pendingReview queue (it survives app restarts); for a pasted
+ * SMS/OCR review, reviewState itself IS the live truth. */
+async function commitTaughtEntries(rawEntries){
+  if (reviewOpts && reviewOpts.source === "bank sync"){
+    const st = await BankSyncClient.getState();
+    const pending = st.pendingReview.slice();
+    pending.splice(teachState.rowIndex, 1, ...rawEntries);
+    await DB.setMeta("bankSyncClient", { ...st, pendingReview: pending });
+    await refresh();
+  } else {
+    reviewState.splice(teachState.rowIndex, 1, ...rawEntries.map(toReviewEntry));
+    markDuplicates(reviewState);
+  }
+}
+
+function teachTokenHTML(){
+  const { text, selections, pendingStart } = teachState;
+  const tokens = PatternLearner.tokenize(text);
+  const fieldForOffset = (off) => { const s = selections.find((s) => off >= s.start && off < s.end); return s ? s.field : null; };
+  let html = "", cursor = 0;
+  tokens.forEach((tok, idx) => {
+    if (tok.start > cursor) html += esc(text.slice(cursor, tok.start)).replace(/\n/g, "<br>");
+    const field = fieldForOffset(tok.start);
+    const pending = pendingStart === idx;
+    const style = `cursor:pointer;border-radius:4px;padding:1px 2px;${field ? `background:${TEACH_FIELD_COLORS[field] || "var(--accent)"};color:#111;` : ""}${pending ? "outline:2px dashed var(--accent);" : ""}`;
+    html += `<span class="teach-tok" data-tok="${idx}" style="${style}">${esc(tok.text)}</span>`;
+    cursor = tok.end;
+  });
+  if (cursor < text.length) html += esc(text.slice(cursor)).replace(/\n/g, "<br>");
+  return html;
+}
+
+function teachHTML(){
+  const t = teachState;
+  const header = `<button class="btn ghost bk" id="teachCancel" style="margin-bottom:8px">${svgIcon("back")}Cancel</button>
+    <div class="pagehead"><h1>Teach the parser</h1></div>`;
+
+  if (!t.msgType){
+    return header + `
+    <div class="card"><p class="tiny faint">This is the cleaned message text — never the raw email, never sent anywhere.</p>
+      <div class="mono tiny" style="white-space:pre-wrap;line-height:1.7;margin-top:8px">${teachTokenHTML()}</div>
+    </div>
+    <div class="card"><h3 style="font-size:15px;margin-bottom:8px">What kind of message is this?</h3>
+      ${Object.entries(TEACH_TYPE_FIELDS).map(([k, cfg]) => `<button class="btn block" data-msgtype="${k}" style="margin-bottom:8px">${esc(cfg.label)}</button>`).join("")}
+    </div>`;
+  }
+
+  const cfg = TEACH_TYPE_FIELDS[t.msgType];
+  const haveAllRequired = cfg.fields.filter((f) => f.required).every((f) => t.selections.some((s) => s.field === f.key));
+
+  if (!t.preview){
+    const activeCfg = t.activeField ? cfg.fields.find((f) => f.key === t.activeField) : null;
+    return header + `
+    <div class="card"><div class="mono tiny" style="white-space:pre-wrap;line-height:1.7">${teachTokenHTML()}</div></div>
+    <div class="card">
+      <h3 style="font-size:15px;margin-bottom:6px">${esc(cfg.label)}</h3>
+      <p class="tiny faint" style="margin-bottom:8px">${activeCfg ? `Tap the word where the <b>${esc(activeCfg.label)}</b> starts, then tap where it ends — the same word twice for just one word.` : "Tap a field below, then tap it in the text above."}</p>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        ${cfg.fields.map((f) => {
+          const sel = t.selections.find((s) => s.field === f.key);
+          const active = t.activeField === f.key;
+          const chip = sel && !active ? `background:${TEACH_FIELD_COLORS[f.key]};color:#111;` : "";
+          return `<button class="btn sm${active ? " primary" : ""}" data-teach-pick="${f.key}" style="${chip}">${esc(f.label)}${f.required ? " *" : ""}${sel ? " ✓" : ""}</button>`;
+        }).join("")}
+      </div>
+      ${haveAllRequired ? `<button class="btn primary block" id="teachPreview" style="margin-top:12px">Preview pattern</button>` : `<p class="tiny faint" style="margin-top:10px">Select the field${cfg.fields.filter(f=>f.required).length>1?"s":""} marked * before previewing.</p>`}
+    </div>`;
+  }
+
+  const plain = PatternLearner.describePlainly(t.text, t.selections);
+  const rows = t.preview.matches;
+  return header + `
+    <div class="card">
+      <h3 style="font-size:15px;margin-bottom:8px">In plain language</h3>
+      ${plain.map((l) => `<p class="tiny" style="margin-bottom:4px">${esc(l)}</p>`).join("")}
+    </div>
+    <div class="card">
+      <h3 style="font-size:15px;margin-bottom:8px">${rows.length > 1 ? `Found ${rows.length} matching rows in this message` : "Extracted from this message"}</h3>
+      ${rows.length === 0 ? `<p class="tiny" style="color:var(--warn)">This didn't extract anything — go back and check your selections.</p>` :
+        rows.map((r) => `<div class="row between tiny" style="padding:4px 0;border-bottom:1px solid var(--line)">
+          <span>${esc(r.ymd)} ${esc(r.merchant || r.counterparty || r.source || "")}</span>
+          <span class="mono">${U.fmt(r.amount)}</span>
+        </div>`).join("")}
+      ${rows.length > 1 ? `<p class="tiny faint" style="margin-top:8px">This message follows a repeating shape — all ${rows.length} rows will be extracted the same way, now and in future messages like it.</p>` : ""}
+    </div>
+    <div class="card">
+      <div class="field"><label>Pattern name</label><input id="teachName" value="${esc(cfg.defaultName)}" maxlength="40"/></div>
+      <p class="tiny faint" style="margin:6px 0 10px">Starts in <b>shadow mode</b>: it'll show what it would log, but won't save anything on its own until you've confirmed it correct 5 times in review.</p>
+      <button class="btn primary block" id="teachSave" ${rows.length === 0 ? "disabled style='opacity:.5'" : ""}>Save pattern${rows.length > 1 ? ` (${rows.length} rows)` : ""}</button>
+      <button class="btn block ghost" id="teachBack" style="margin-top:8px">Back to selecting</button>
+    </div>`;
+}
+
+function wireTeach(){
+  const cancel = FULL.querySelector("#teachCancel");
+  if (cancel) cancel.addEventListener("click", () => { teachState = null; returnToReview(); });
+
+  FULL.querySelectorAll("[data-msgtype]").forEach((b) => b.addEventListener("click", () => {
+    teachState.msgType = b.dataset.msgtype; teachState.selections = []; teachState.activeField = null;
+    renderTeach();
+  }));
+
+  FULL.querySelectorAll("[data-teach-pick]").forEach((b) => b.addEventListener("click", () => {
+    teachState.activeField = teachState.activeField === b.dataset.teachPick ? null : b.dataset.teachPick;
+    teachState.pendingStart = null;
+    renderTeach();
+  }));
+
+  FULL.querySelectorAll(".teach-tok").forEach((el) => el.addEventListener("click", () => {
+    if (!teachState.activeField) return;
+    const idx = +el.dataset.tok;
+    const tokens = PatternLearner.tokenize(teachState.text);
+    if (teachState.pendingStart == null){
+      teachState.pendingStart = idx;
+    } else {
+      const a = Math.min(teachState.pendingStart, idx), b = Math.max(teachState.pendingStart, idx);
+      teachState.selections = teachState.selections.filter((s) => s.field !== teachState.activeField);
+      teachState.selections.push({ field: teachState.activeField, start: tokens[a].start, end: tokens[b].end });
+      teachState.pendingStart = null;
+      teachState.activeField = null;
+    }
+    renderTeach();
+  }));
+
+  const previewBtn = FULL.querySelector("#teachPreview");
+  if (previewBtn) previewBtn.addEventListener("click", () => {
+    const cfg = TEACH_TYPE_FIELDS[teachState.msgType];
+    const built = PatternLearner.buildPattern(teachState.text, teachState.selections);
+    const pattern = { id: teachState.patternId, name: cfg.defaultName, type: cfg.patternType, re: built.re, groups: built.groups };
+    teachState.preview = { built, pattern, matches: PatternLearner.previewMatches(teachState.text, pattern, parserCtx()) };
+    renderTeach();
+  });
+
+  const backBtn = FULL.querySelector("#teachBack");
+  if (backBtn) backBtn.addEventListener("click", () => { teachState.preview = null; renderTeach(); });
+
+  const saveBtn = FULL.querySelector("#teachSave");
+  if (saveBtn) saveBtn.addEventListener("click", async () => {
+    const cfg = TEACH_TYPE_FIELDS[teachState.msgType];
+    const name = (val("teachName") || cfg.defaultName).trim().slice(0, 40) || cfg.defaultName;
+    const newPattern = {
+      id: teachState.patternId, name, re: teachState.preview.built.re, type: cfg.patternType, groups: teachState.preview.built.groups,
+      learned: true, enabled: true, state: "shadow", confirmedCount: 0, rejectedCount: 0, createdAt: Date.now(),
+    };
+    const patterns = (S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS).slice();
+    patterns.push(newPattern);
+    await DB.setMeta("smsParserPatterns", patterns);
+    await refresh();
+    await commitTaughtEntries(teachState.preview.matches);
+    const n = teachState.preview.matches.length;
+    teachState = null;
+    toast(`Pattern saved (shadow mode) — ${n} message${n > 1 ? "s" : ""} updated`);
+    returnToReview();
+  });
+}
 
 /* ============ [T] SCREENSHOT OCR (Tesseract.js, on-device) ========= */
 const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -3469,12 +4116,38 @@ function wireCats(){
     await refresh(); openFull(catsHTML()); wireCats(); toast("Added");
   });
 }
+function learnedPatternsListHTML(pats){
+  const learned = pats.map((p, i) => ({ p, i })).filter((x) => x.p.learned);
+  if (!learned.length){
+    return `<div class="card"><p class="tiny faint">No learned patterns yet — use <b>teach the parser</b> from an unrecognised message in any review screen.</p></div>`;
+  }
+  return `<div class="card">
+    <h3 style="font-size:15px;margin-bottom:2px">Learned patterns</h3>
+    <p class="tiny faint" style="margin-bottom:8px">Order matters — the first match wins. Reorder with the arrows.</p>
+    ${learned.map(({ p, i }) => `<div class="row between" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start;${p.enabled===false?"opacity:.5":""}">
+      <div style="flex:1;min-width:0">
+        <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+          <b class="tiny">${esc(p.name || p.id)}</b>
+          <span class="tiny" style="padding:1px 6px;border-radius:8px;background:${p.state === "active" ? "var(--pos)" : "var(--warn)"};color:#111">${p.state === "active" ? "Active" : "Shadow"}</span>
+        </div>
+        <div class="tiny faint" style="margin-top:2px">${p.confirmedCount || 0} confirmed · ${p.rejectedCount || 0} rejected${p.state !== "active" ? ` · ${Math.max(0, 5 - (p.confirmedCount || 0))} more to graduate` : ""}</div>
+      </div>
+      <div class="row" style="gap:4px;flex-shrink:0">
+        <button class="btn sm ghost" data-pat-up="${i}" aria-label="Move up" ${i === 0 ? "disabled style='opacity:.3'" : ""}>↑</button>
+        <button class="btn sm ghost" data-pat-down="${i}" aria-label="Move down" ${i === pats.length - 1 ? "disabled style='opacity:.3'" : ""}>↓</button>
+        <button class="btn sm ghost" data-pat-toggle="${i}">${p.enabled === false ? "Enable" : "Disable"}</button>
+        <button class="btn sm ghost danger" data-pat-del="${i}">Delete</button>
+      </div>
+    </div>`).join("")}
+  </div>`;
+}
 function smsPatternsHTML(){
   const pats = S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS;
   const rules = S.settings.merchantRules || SmsParser.DEFAULT_MERCHANT_RULES;
   return `
   <button class="btn ghost bk" onclick="closeFull()" style="margin-bottom:8px">${svgIcon("back")}Close</button>
   <div class="pagehead"><h1>SMS formats</h1></div>
+  ${learnedPatternsListHTML(pats)}
   <div class="card"><p class="tiny faint">Each format is a case-insensitive regex plus a map of which capture group is which field
     (<b>amount, date, time, merchant, counterparty, fromAcct, toAcct, source</b>). Add a new one to support another bank — no code change.
     A format with <b>type: transfer_auto</b> is resolved by matching both account last-4s against your registered accounts.</p></div>
@@ -3511,6 +4184,24 @@ function wireSMSPatterns(){
   FULL.querySelector("#ruleReset").addEventListener("click", async () => {
     await DB.setMeta("merchantRules", SmsParser.DEFAULT_MERCHANT_RULES); await refresh(); openOverlay("smsPatterns"); toast("Reset");
   });
+  const withPats = async (fn) => {
+    const pats = (S.settings.smsParserPatterns || SmsParser.DEFAULT_PATTERNS).slice();
+    fn(pats);
+    await DB.setMeta("smsParserPatterns", pats); await refresh(); openOverlay("smsPatterns");
+  };
+  FULL.querySelectorAll("[data-pat-up]").forEach((b) => b.addEventListener("click", () => withPats((pats) => {
+    const i = +b.dataset.patUp; if (i > 0) [pats[i - 1], pats[i]] = [pats[i], pats[i - 1]];
+  })));
+  FULL.querySelectorAll("[data-pat-down]").forEach((b) => b.addEventListener("click", () => withPats((pats) => {
+    const i = +b.dataset.patDown; if (i < pats.length - 1) [pats[i], pats[i + 1]] = [pats[i + 1], pats[i]];
+  })));
+  FULL.querySelectorAll("[data-pat-toggle]").forEach((b) => b.addEventListener("click", () => withPats((pats) => {
+    const p = pats[+b.dataset.patToggle]; if (p) p.enabled = p.enabled === false ? true : false;
+  })));
+  FULL.querySelectorAll("[data-pat-del]").forEach((b) => b.addEventListener("click", () => {
+    if (!confirm("Delete this learned pattern?")) return;
+    withPats((pats) => pats.splice(+b.dataset.patDel, 1));
+  }));
 }
 
 /* ---- [H] SETTINGS / BACKUP / OVERLAYS ------------------------------- */
@@ -3527,6 +4218,7 @@ function openOverlay(name){
     allowanceInfo: [allowanceInfoHTML, wireAllowanceInfo],
     manual:   [manualHTML, null],
     bankSyncReview: [bankSyncReviewHTML, wireBankSyncReview],
+    importLog: [importLogHTML, wireImportLog],
   };
   const [html, wire] = R[name] || R.settings;
   openFull(html());
@@ -3747,6 +4439,7 @@ function bankSyncHTML(s){
       ${setRow("Stuck on server", bscRaw.lastPendingCount > 0 ? `${bscRaw.lastPendingCount} message${bscRaw.lastPendingCount>1?"s":""} couldn't be decrypted last sync — see below` : "None", "")}
       <button class="btn sm block" id="bsSyncNow" style="margin-top:8px">Sync now</button>
       ${pendingReviewCount ? `<button class="btn sm primary block" id="bsOpenReview" style="margin-top:8px">Review ${pendingReviewCount} message${pendingReviewCount>1?"s":""}</button>` : ""}
+      ${S.tx.some((t) => t.autoApplied) ? `<button class="btn sm block ghost" data-act="open-import-log" style="margin-top:8px">View import log</button>` : ""}
       <div class="sub-label">Key &amp; token</div>
       <button class="btn sm block${armKey}" id="bsRegenKey">${s._armBsRegenKey ? "Tap again to regenerate — undelivered messages become unreadable" : "Regenerate key"}</button>
       ${s._armBsRegenKey ? `<button class="btn sm block ghost" id="bsRegenKeyCancel" style="margin-top:8px">Cancel</button>` : ""}
@@ -3926,10 +4619,16 @@ rank/level is derived from cumulative XP</div>
     <p>Runs on-device OCR (Tesseract, downloaded once and then cached offline) over a receipt or banking-app screenshot, then feeds the recognised text through the same SMS parser and review flow. The image never leaves the device.</p>
     ${div}
 
-    <h2>Automatic import (in progress)</h2>
-    <p>Settings → Automatic import generates a private key on this device, then registers its <i>public</i> key with a Cloudflare Worker you deploy and control yourself (see SERVER-SETUP.md). Gmail can be set up (Apps Script, APPS-SCRIPT-SETUP.md) to relay bank alert emails to that Worker; it encrypts each one to your device's public key immediately and stores ciphertext only — it never sees the plaintext, the sender, or the subject.</p>
-    <p>On open (and via "Sync now"), Rial fetches any waiting messages, decrypts them on this device with the private key, and drops them straight into the same review screen as a pasted SMS. <b>Nothing is auto-applied</b> — every synced message still needs your review and a tap on Save, exactly like today. A message is only marked delivered on the server after it has decrypted successfully <i>and</i> been written to this device's storage, so a bad connection or a corrupted message can never make one silently disappear.</p>
+    <h2>Automatic import</h2>
+    <p>Settings → Automatic import generates a private key on this device, then registers its <i>public</i> key with a Cloudflare Worker you deploy and control yourself (see SERVER-SETUP.md). Gmail can be set up (Apps Script, APPS-SCRIPT-SETUP.md) to relay bank alert emails to that Worker; it encrypts each one to your device's public key immediately and stores ciphertext only — it never sees the plaintext, the sender, or the subject. On this device, the raw email is stripped down to readable text (headers, MIME structure and HTML source all discarded) before the parser ever sees it.</p>
+    <p>On open (and via "Sync now"), Rial fetches any waiting messages, decrypts them, and either drops them into the same review screen as a pasted SMS, or — only for a pattern <i>you</i> taught and confirmed correct at least 5 times, on a complete, high-confidence, not-already-seen result — applies it straight away. Every built-in pattern always goes to review; nothing auto-applies until you've personally taught and trusted it. A message is only marked delivered on the server after it has decrypted successfully <i>and</i> been written to this device's storage, so a bad connection or a corrupted message can never make one silently disappear.</p>
+    <p>An auto-applied entry is marked "Auto" in Transactions with a one-tap Undo, and every one of them is listed in Settings → Automatic import → View import log.</p>
     <p>Regenerating the key or rotating the token invalidates the old one immediately — any message still waiting on the server under the old key becomes permanently unreadable, which is why both ask for a second tap. Disabling unregisters this device and asks the server to delete anything of yours it's still holding; your transactions are never touched.</p>
+    ${div}
+
+    <h2>Teach the parser &amp; shadow mode</h2>
+    <p>An unrecognised synced or pasted message offers "teach the parser": pick what kind of message it is, tap-select the amount/date/merchant-or-counterparty/account-last-4 spans, and Rial builds a pattern from the stable text around your selections — shown in plain language and tested live against the message before you save. Everything about this runs on this device; no message text and no learned pattern is ever transmitted anywhere.</p>
+    <p>A new or edited pattern starts in <b>shadow mode</b>: it parses and shows what it would have logged, but never applies anything on its own. Saving a review entry exactly as extracted counts as a confirmation; changing its type before saving counts as a rejection. Five confirmations graduate a pattern to active (eligible to auto-apply); a single rejection sends it straight back to shadow and resets its confirmation count to zero. Settings → SMS formats shows every learned pattern's state and counts, and lets you name, reorder, disable, or delete any of them.</p>
     ${div}
 
     <h2>Themes & music</h2>
@@ -4186,6 +4885,8 @@ FULL.addEventListener("click", async (e) => {
     await saveSchedule({ windows: w }); openFull(settingsHTML()); return;
   }
   if (e.target.id === "schedResume"){ await resumeSchedule(); openFull(settingsHTML()); return; }
+  const teachBtn = e.target.closest("[data-teach]");
+  if (teachBtn){ openTeach(+teachBtn.dataset.teach); return; }
   const act = e.target.closest("[data-act]");
   if (act){ handleAct(act.dataset.act, act.dataset); return; }
   if (e.target.id === "setSaveMoney"){
@@ -4233,10 +4934,13 @@ FULL.addEventListener("click", async (e) => {
   if (e.target.id === "bsSyncNow"){
     toast("Syncing…");
     const r = await BankSyncClient.syncNow();
-    await refresh();
+    await refresh(); render();
     if (r.ok){
-      S.settings._bsMsg = { ok:true, text: r.newCount ? `Synced — ${r.newCount} new message${r.newCount>1?"s":""} ready to review.` : "Synced — nothing new." };
-      if (r.newCount) showSyncReadyBanner(r.newCount);
+      const bits = [];
+      if (r.newCount) bits.push(`${r.newCount} to review`);
+      if (r.autoAppliedCount) bits.push(`${r.autoAppliedCount} auto-applied`);
+      S.settings._bsMsg = { ok:true, text: bits.length ? `Synced — ${bits.join(", ")}.` : "Synced — nothing new." };
+      if (r.newCount || r.autoAppliedCount) showSyncReadyBanner(r.newCount, r.autoAppliedCount);
     } else {
       S.settings._bsMsg = { ok:false, text: r.error === "offline" ? "Couldn't reach the server — check your connection." : "Sync failed: " + r.error };
     }

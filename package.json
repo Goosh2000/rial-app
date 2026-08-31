@@ -7,7 +7,8 @@
     "icons": "node build-icons.js",
     "themes": "node build-themes.js",
     "parser": "node build-parser.js",
-    "test": "node build-themes.js --check && node build-parser.js --check && node test-parser.mjs && node test.mjs && node test-dom.mjs && node test-browser.mjs"
+    "mime": "node build-mime.js",
+    "test": "node build-themes.js --check && node build-parser.js --check && node build-mime.js --check && node test-parser.mjs && node test-mime.mjs && node test.mjs && node test-dom.mjs && node test-browser.mjs"
   },
   "license": "ISC",
   "type": "commonjs",

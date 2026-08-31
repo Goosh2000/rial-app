@@ -20,6 +20,9 @@ the app is fully functional, offline-first, with none of that ever set up.
 | `parser.js` | **bank-SMS parser** — single source of truth, CJS module, tested directly by `test-parser.mjs` |
 | `build-parser.js` | inlines `parser.js` into `index.html` — `node build-parser.js` (`--check` = CI) |
 | `PARSER-SPEC.md` | SMS parser contract: patterns, transfer-type rule, last4-only guarantee |
+| `mime.js` | **MIME decoder** — strips a synced raw email down to readable text before the SMS parser ever sees it |
+| `build-mime.js` | inlines `mime.js` into `index.html` — `node build-mime.js` (`--check` = CI) |
+| `MIME-SPEC.md` | MIME decoder contract: header stripping, multipart walk, transfer-encoding/charset handling |
 | `icon-*.png` | app icons (generated) |
 | `build-icons.js` | regenerates icons — pure Node, no deps: `node build-icons.js` |
 | `test*.mjs` | test suites (see **Test** below) — dev deps: `jsdom`, `puppeteer-core`, `jsqr` |
